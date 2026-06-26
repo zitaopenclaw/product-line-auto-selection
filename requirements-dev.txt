@@ -1,0 +1,6 @@
+# Dev/test dependencies (separate from runtime requirements.txt)
+-r requirements.txt
+
+pytest>=8.0
+pytest-cov>=5.0
+pytest-mock>=3.12
