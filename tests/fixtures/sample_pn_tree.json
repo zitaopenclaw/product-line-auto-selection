@@ -1,0 +1,74 @@
+{
+  "tree": [
+    {
+      "name": "Lenovo Services Portfolio",
+      "level": 1,
+      "pn_count": 3,
+      "children": [
+        {
+          "name": "Deployment Services",
+          "level": 2,
+          "pn_count": 2,
+          "children": [
+            {
+              "name": "Hardware Only Deployment",
+              "level": 3,
+              "pn_count": 1,
+              "pns": [
+                {"description": "Onsite hardware installation for desktops"},
+                {"description": "Cable management and rack setup"}
+              ]
+            },
+            {
+              "name": "Software Deployment",
+              "level": 3,
+              "pn_count": 1,
+              "pns": [
+                {"description": "OS image deployment service"},
+                {"description": "Application configuration service"}
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Managed Services",
+          "level": 2,
+          "pn_count": 1,
+          "children": [
+            {
+              "name": "Managed Endpoint",
+              "level": 3,
+              "pn_count": 1,
+              "pns": [
+                {"description": "24/7 endpoint monitoring service"}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "AI Solutions",
+      "level": 1,
+      "pn_count": 0,
+      "children": [
+        {
+          "name": "AI Professional Services",
+          "level": 2,
+          "pn_count": 0,
+          "children": [
+            {
+              "name": "AI Adoption Services",
+              "level": 3,
+              "pn_count": 0,
+              "pns": [
+                {"description": "AI use-case discovery workshop"},
+                {"description": "AI strategy consulting"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

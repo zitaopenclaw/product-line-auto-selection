@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.git/
+.gitignore
+.pytest_cache/
+tests/
+scripts/
+output/der_refinement_agent/
+output/pre_der_agent/
+logs/
+data/
+**/*.xlsx
+**/*.md
+*.drawio.png
