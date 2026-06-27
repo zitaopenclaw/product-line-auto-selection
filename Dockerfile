@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 COPY --chown=user . /app
 
+# data/ is excluded by .dockerignore; create it as root so the user account
+# can write data/index/ when the index is pre-built below.
+RUN mkdir -p /app/data && chown user:user /app/data
+
 USER user
 
 ENV HOME=/home/user \
