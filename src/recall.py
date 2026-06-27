@@ -38,6 +38,21 @@ class RecallIndex:
             batch_size=64,
         )
 
+    @classmethod
+    def from_pretrained(cls, index_dir: Path, model: SentenceTransformer) -> "RecallIndex":
+        import json
+        import pickle
+
+        obj = cls.__new__(cls)
+        obj.products = []
+        with (index_dir / "corpus.json").open("r", encoding="utf-8") as f:
+            obj.corpus_texts = json.load(f)
+        with (index_dir / "bm25.pkl").open("rb") as f:
+            obj.bm25 = pickle.load(f)
+        obj.model = model
+        obj.embeddings = np.load(str(index_dir / "embeddings.npy"))
+        return obj
+
     def recall(self, description: str, topk: int = DEFAULT_TOPK) -> list[int]:
         ids_bm25 = bm25_topk(description or "", self.bm25, topk)
         q = derive_query_text(description or "")
