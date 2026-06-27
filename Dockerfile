@@ -19,4 +19,4 @@ USER user
 
 EXPOSE 7860
 
-CMD PORT=${PORT:-7860}; python -m uvicorn app:app --host 0.0.0.0 --port $PORT
+CMD PORT=${PORT:-7860}; gunicorn app:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
