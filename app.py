@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import hmac
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Iterable
 
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parent
@@ -27,6 +30,18 @@ _nodes: list[PNNode] | None = None
 async def lifespan(app: FastAPI):
     global _index, _client, _nodes
 
+    from src.rerank import RerankClient
+    from src.load_pn_tree import load_pn_nodes
+
+    _nodes = load_pn_nodes()
+    _client = RerankClient(prompt_path=PROMPT_PATH, format_fn=_format_candidates_block_v2)
+    yield
+
+
+def _ensure_index():
+    global _index
+    if _index is not None:
+        return
     import json
     import pickle
 
@@ -34,10 +49,8 @@ async def lifespan(app: FastAPI):
     from sentence_transformers import SentenceTransformer
     from src.recall import EMBED_MODEL_NAME, RecallIndex
     from src.recall_common import build_bm25
-    from src.rerank import RerankClient
-    from src.load_pn_tree import load_pn_nodes, pn_node_embed_text
+    from src.load_pn_tree import pn_node_embed_text
 
-    _nodes = load_pn_nodes()
     if not (INDEX_DIR / "embeddings.npy").exists():
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         corpus_texts = [pn_node_embed_text(n) for n in _nodes]
@@ -50,11 +63,15 @@ async def lifespan(app: FastAPI):
     else:
         model = SentenceTransformer(EMBED_MODEL_NAME)
     _index = RecallIndex.from_pretrained(INDEX_DIR, model)
-    _client = RerankClient(prompt_path=PROMPT_PATH, format_fn=_format_candidates_block_v2)
-    yield
 
 
-app = FastAPI(lifespan=lifespan, title="Pre-DER Recommendation API")
+app = FastAPI(
+    lifespan=lifespan,
+    title="Pre-DER Recommendation API",
+    swagger_ui_parameters={"persistAuthorization": True},
+)
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def _format_candidates_block_v2(cands: Iterable) -> str:
@@ -88,9 +105,11 @@ def _node_to_candidate(node: PNNode, idx: int):
 # ── Auth ──
 
 
-async def _verify_key(x_api_key: str | None = Header(None)):
+async def _verify_key(x_api_key: str | None = Security(_api_key_header)):
     expected = os.environ.get("APP_API_KEY", "")
-    if not expected or x_api_key != expected:
+    if not expected:
+        raise HTTPException(status_code=503, detail="Server auth not configured")
+    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
 
@@ -104,13 +123,17 @@ async def health():
 
 class RecommendRequest(BaseModel):
     query: str
+    business_group: str = ""
 
 
 @app.post("/recommend", dependencies=[Depends(_verify_key)])
 async def recommend(req: RecommendRequest):
     global _index, _client, _nodes
-    if _index is None or _client is None or _nodes is None:
+    if _client is None or _nodes is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
+    _ensure_index()
+    if _index is None:
+        raise HTTPException(status_code=503, detail="Index not available")
 
     cand_indices = _index.recall(req.query, topk=60)[:30]
     if not cand_indices:
@@ -121,7 +144,8 @@ async def recommend(req: RecommendRequest):
 
     from src.confidence import keep_topk_diverse_tree, score_to_level
 
-    scored_raw = _client.rerank(req.query, "", cand_objs)
+    loop = asyncio.get_event_loop()
+    scored_raw = await loop.run_in_executor(None, _client.rerank, req.query, req.business_group, cand_objs)
 
     by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
     merged = []
