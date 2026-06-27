@@ -196,7 +196,7 @@ class TestRerankClientRerank:
             assert len(result) == 1
             assert result[0]["score"] == 0.85
             assert stats_after["fallback_ok"] == stats_before["fallback_ok"] + 1
-            assert stats_after["deepseek_fail"] == stats_before["deepseek_fail"] + 1
+            assert stats_after["minimax_fail"] == stats_before["minimax_fail"] + 1
 
     def test_empty_candidates_returns_empty(self):
         client = RerankClient()
@@ -210,5 +210,5 @@ class TestRerankClientRerank:
             client.rerank("desc", "IDG", self._cands())
             client.rerank("desc", "IDG", self._cands())
             stats = client.get_stats()
-            assert stats["deepseek_ok"] == 2
-            assert stats["deepseek_fail"] == 0
+            assert stats["minimax_ok"] == 2
+            assert stats["minimax_fail"] == 0

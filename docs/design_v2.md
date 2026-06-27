@@ -46,7 +46,7 @@ output/pre_der_agent/
 The `BG:` field is explicitly embedded in `sales-voice-inputs.md` (added by the user). This is the ground truth; no LLM inference or heuristic is needed. In a real agent workflow, the BG would be a CRM session attribute.
 
 ### 3.2 Description Extraction: LLM Pre-Step
-Voice inputs contain noise (TCV amounts, close dates, CRM verbs, customer names) that hurts recall precision. A pre-step calls DeepSeek to distill a clean 1–3 sentence product-need description. 
+Voice inputs contain noise (TCV amounts, close dates, CRM verbs, customer names) that hurts recall precision. A pre-step calls the LLM (MiniMax primary / DeepSeek fallback) to distill a clean 1–3 sentence product-need description. 
 
 **Extraction prompt** (`src/parse_voice_input.py`):
 > "Extract a concise 1–3 sentence description of what products or services the customer needs. Focus on: product type, quantity if mentioned, and service scope. Ignore: customer names, TCV, dollar values, dates, CRM actions."
@@ -112,7 +112,7 @@ data/converted/sales-voice-inputs.md
          ▼
 [Stage 0] src/parse_voice_input.py
   • Parse markdown → list of VoiceInput(id, title, bg, raw_text)
-  • LLM call per input (DeepSeek): extract clean product-need description
+  • LLM call per input (MiniMax primary / DeepSeek fallback): extract clean product-need description
          │
          ▼
 [Stage 1] src/load_pn_tree.py
@@ -130,7 +130,7 @@ data/converted/sales-voice-inputs.md
 [Stage 3] src/rerank.py  (reused, prompt + format_fn swapped)
   • RerankClient(prompt_path=rerank_v2.txt, format_fn=format_candidates_block_v2)
   • Candidates formatted as: level=L3 | name=... | path=... | sample_pns=...
-  • DeepSeek primary → MiniMax fallback
+  • MiniMax primary → DeepSeek fallback
   • Returns per-candidate score 0.0–1.0
          │
          ▼
@@ -167,7 +167,7 @@ Input: `data/converted/sales-voice-inputs.md` (20 entries, BG: IDG/DCG/SSG expli
 - [Stage 3] `src/rerank.py` (RerankClient reused, new prompt)
   - `prompts/rerank_v2.txt`: BG passed as soft context, candidate format includes level + path
   - Scoring 0.0-1.0, same semantics as the DER Refinement Agent
-  - Provider: DeepSeek primary -> MiniMax fallback
+  - Provider: MiniMax primary -> DeepSeek fallback
 
 - [Stage 4] `src/confidence.py` (reused unchanged)
   - `score_to_level`: same thresholds
@@ -249,7 +249,7 @@ python scripts/run_pre_der_agent.py --tag my_run --concurrency 4
 | IDG match rate | 88.9% (8/9) |
 | DCG match rate | 100% (3/3) |
 | SSG match rate | 100% (8/8) |
-| LLM provider | DeepSeek only (0 failures, 0 fallbacks) |
+| LLM provider | DeepSeek only (0 failures, 0 fallbacks) *(historical run; current primary is MiniMax)* |
 | Total wall time | ~123s (20 extraction + 20 rerank calls) |
 
 **Zero-match analysis**: Input #8 says "please add 200 workstations to the opportunity we discussed yesterday" — no product or service context after extraction. This is a retrieval dead-end by design; the agent would need to fetch the prior opportunity from CRM.

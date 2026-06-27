@@ -31,13 +31,22 @@ class TestHealth:
 
 class TestRecommendAuth:
     def test_no_key_returns_401(self, monkeypatch):
+        monkeypatch.setenv("APP_API_KEY", "real-key")
+        m = _reimport()
+        m._index = MagicMock()
+        m._client = MagicMock()
+        client = TestClient(m.app)
+        resp = client.post("/recommend", json={"query": "laptop"})  # no header
+        assert resp.status_code == 401
+
+    def test_unconfigured_key_returns_503(self, monkeypatch):
         monkeypatch.delenv("APP_API_KEY", raising=False)
         m = _reimport()
         m._index = MagicMock()
         m._client = MagicMock()
         client = TestClient(m.app)
-        resp = client.post("/recommend", json={"query": "laptop"})
-        assert resp.status_code == 401
+        resp = client.post("/recommend", json={"query": "laptop"}, headers={"X-API-Key": "anything"})
+        assert resp.status_code == 503
 
     def test_wrong_key_returns_401(self, monkeypatch):
         monkeypatch.setenv("APP_API_KEY", "real-key")
@@ -59,7 +68,8 @@ class TestRecommendAuth:
 
 
 class TestRecommendInput:
-    def test_empty_query_returns_topk_list(self):
+    def test_empty_query_returns_topk_list(self, monkeypatch):
+        monkeypatch.setenv("APP_API_KEY", "test-key")
         m = _reimport()
         mock_index = MagicMock()
         mock_index.recall.return_value = []
@@ -75,7 +85,8 @@ class TestRecommendInput:
 
 
 class TestRecommendIntegration:
-    def test_valid_query_returns_top3_with_expected_structure(self):
+    def test_valid_query_returns_top3_with_expected_structure(self, monkeypatch):
+        monkeypatch.setenv("APP_API_KEY", "test-key")
         m = _reimport()
         mock_index = MagicMock()
         mock_client = MagicMock()
@@ -111,7 +122,8 @@ class TestRecommendIntegration:
         assert slot["score"] == 0.92
         assert slot["level_label"] == "High"
 
-    def test_no_recall_results_returns_empty(self):
+    def test_no_recall_results_returns_empty(self, monkeypatch):
+        monkeypatch.setenv("APP_API_KEY", "test-key")
         m = _reimport()
         mock_index = MagicMock()
         mock_index.recall.return_value = []

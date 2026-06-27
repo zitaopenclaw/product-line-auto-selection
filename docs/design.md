@@ -107,7 +107,7 @@ The two top-60 lists are unioned and de-duplicated. Result: up to 60 candidates 
 Documented in detail in [docs/field-logic.md](field-logic.md). Briefly: Helen's 6 DER fields (Service Model, ARS flag, AI flag, existing-expansion flag, Scope, BG) are evaluated and used to **inject** guaranteed / boosted OH products at the head of the candidate list before the LLM rerank. This closes the largest precision gap that pure-text recall leaves open. The merged pool is then trimmed to 30 candidates for Stage 4.
 
 ### Stage 4 — LLM Rerank
-The DeepSeek API (primary) is called once per DER with a batched prompt listing the top-30 candidates from the cascade. If the primary call fails, MiniMax is used as fallback. The LLM returns a JSON object with one entry per candidate: `{product_id: "...", score: 0.0–1.0}`.
+The MiniMax API (primary) is called once per DER with a batched prompt listing the top-30 candidates from the cascade. If the primary call fails, DeepSeek is used as fallback. The LLM returns a JSON object with one entry per candidate: `{product_id: "...", score: 0.0–1.0}`.
 
 The prompt template lives in `prompts/rerank.txt` and is rendered with `str.format`.
 
@@ -166,7 +166,7 @@ product-line-auto-selection/
 ## 7. Open Questions / Risks
 
 1. **Embedding model availability**: `bge-small-en-v1.5` is ~130 MB and runs on CPU fine, but `sentence-transformers` + `torch` pull in ~1 GB of deps. Acceptable for POC.
-2. **LLM endpoint resilience**: DeepSeek is primary and MiniMax is fallback. Keep both base URL/model/auth settings aligned in `.env`.
+2. **LLM endpoint resilience**: MiniMax is primary and DeepSeek is fallback. Keep both base URL/model/auth settings aligned in `.env`.
 3. **Prompt cost / latency**: 50 rows × 1 call each ≈ trivial. Full run = 2,353 calls; if that's too slow, we can batch multiple DERs per call (multiple JSON blocks) — design allows it but POC keeps it simple.
 4. **Score calibration**: thresholds (0.85 / 0.60 / 0.30) are heuristics. POC will surface actual score distribution; adjust if needed.
 5. **Cross-BG matches**: the BG filter is strict. If a DER's `Business Group` is miscoded in CRM, we'll miss the right product. Out of scope for POC.

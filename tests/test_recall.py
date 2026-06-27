@@ -6,6 +6,8 @@ production code path involves real model loading.
 """
 from __future__ import annotations
 
+import json
+import pickle
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -118,3 +120,39 @@ class TestRecallIndex:
         results = idx.recall("X", topk=3)
         for r in results:
             assert 0 <= r < len(products)
+
+
+class TestRecallIndexFromPretrained:
+    def test_from_pretrained_loads_and_recalls_correctly(self, tmp_path):
+        """Build an index, persist to disk, reload via from_pretrained, verify recall matches."""
+        products = [
+            _oh("ThinkPad X1 Carbon"),
+            _oh("ThinkSystem Server"),
+            _oh("Managed Service"),
+        ]
+        model = _mock_model()
+        idx = RecallIndex(products, model=model)
+
+        # Persist index to tmp_path (mirrors what deploy/build_index.py does)
+        (tmp_path / "corpus.json").write_text(
+            json.dumps(idx.corpus_texts), encoding="utf-8"
+        )
+        (tmp_path / "bm25.pkl").write_bytes(pickle.dumps(idx.bm25))
+        np.save(str(tmp_path / "embeddings.npy"), idx.embeddings)
+
+        # Load via from_pretrained using the same mock model
+        loaded = RecallIndex.from_pretrained(tmp_path, model)
+
+        assert loaded.corpus_texts == idx.corpus_texts
+        assert loaded.embeddings.shape == idx.embeddings.shape
+
+        # Recall results must be identical
+        original_results = idx.recall("laptop deployment", topk=3)
+        loaded_results = loaded.recall("laptop deployment", topk=3)
+        assert original_results == loaded_results
+
+    def test_from_pretrained_missing_file_raises(self, tmp_path):
+        """Missing index files should raise, not return a silently broken index."""
+        model = _mock_model()
+        with pytest.raises(Exception):
+            RecallIndex.from_pretrained(tmp_path, model)

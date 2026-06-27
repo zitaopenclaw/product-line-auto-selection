@@ -1,4 +1,4 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -45,13 +45,13 @@ The DER Refinement Agent checkpoints automatically every 20 rows. Output files a
 Copy `.env.example` to `.env` and fill in keys:
 
 ```
-DEEPSEEK_API_KEY=...       # primary LLM (required)
+MINIMAX_API_KEY=...        # primary LLM (required)
+MINIMAX_BASE_URL=...       # e.g. https://api.minimaxi.com/v1
+MINIMAX_MODEL=...          # e.g. MiniMax-M3
+
+DEEPSEEK_API_KEY=...       # fallback LLM (optional)
 DEEPSEEK_BASE_URL=...      # e.g. https://api.deepseek.com/v1
 DEEPSEEK_MODEL=...         # e.g. deepseek-chat
-
-MINIMAX_API_KEY=...        # fallback LLM (optional)
-MINIMAX_BASE_URL=...
-MINIMAX_MODEL=...
 ```
 
 Install dependencies: `pip install -r requirements.txt` (pulls ~1 GB including `torch` and `sentence-transformers`).
@@ -65,13 +65,14 @@ src/
   parse_voice_input.py -- parse sales-voice-inputs.md; LLM extraction of clean product-need description (Pre-DER Agent)
   recall_common.py     -- tokenizer, BM25 builder, embedding text formatter, query deriver
   recall.py            -- RecallIndex: builds BM25 + bge-small-en-v1.5 embeddings, union recall
-  rerank.py            -- RerankClient: calls DeepSeek (primary) -> MiniMax (fallback); renders prompt
+  rerank.py            -- RerankClient: calls MiniMax (primary) -> DeepSeek (fallback); renders prompt
   confidence.py        -- score_to_level (High/Medium/Low/drop); keep_topk; keep_topk_diverse; keep_topk_diverse_tree
   field_rules.py       -- structured field cascade (Helen's 6-field rule): apply_field_rules(), inject_field_candidates()
 
 prompts/
-  rerank.txt        -- DER Refinement Agent prompt (BG as hard filter; flat OH candidates)
-  rerank_v2.txt     -- Pre-DER Agent prompt (BG as soft signal; PN tree L2/L3/L4 candidates with level + path)
+  rerank.txt           -- DER Refinement Agent prompt (BG as hard filter; flat OH candidates)
+  rerank_v2.txt        -- Pre-DER Agent prompt (BG as soft signal; PN tree L2/L3/L4 candidates with level + path)
+  rerank_der_tree.txt  -- WIP / future variant: DER form matched against PN tree nodes (not yet wired to any pipeline)
 
 scripts/
   run_der_refinement_agent.py        -- DER Refinement Agent batch runner (--total/--per-bg/--concurrency/--tag/--fresh)

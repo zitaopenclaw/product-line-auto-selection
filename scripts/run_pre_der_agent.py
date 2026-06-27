@@ -107,9 +107,9 @@ def process_one(
         scored_raw = client.rerank(query, vi.bg, cand_objs)
         after_stats = client.get_stats()
 
-        if after_stats["fallback_ok"] > before_stats["fallback_ok"]:
+        if after_stats["minimax_ok"] > before_stats["minimax_ok"]:
             out["provider_used"] = "minimax"
-        elif after_stats["deepseek_ok"] > before_stats["deepseek_ok"]:
+        elif after_stats["fallback_ok"] > before_stats["fallback_ok"]:
             out["provider_used"] = "deepseek"
         else:
             out["provider_used"] = "unknown"
@@ -282,9 +282,9 @@ def build_summary(rows: list[dict], stats: dict, elapsed: float, tag: str) -> st
         "",
         "## LLM Provider Stats",
         "",
-        f"- DeepSeek OK: {stats.get('deepseek_ok', 0)}",
-        f"- DeepSeek fail: {stats.get('deepseek_fail', 0)}",
-        f"- Fallback (MiniMax) OK: {stats.get('fallback_ok', 0)}",
+        f"- MiniMax OK: {stats.get('minimax_ok', 0)}",
+        f"- MiniMax fail: {stats.get('minimax_fail', 0)}",
+        f"- Fallback (DeepSeek) OK: {stats.get('fallback_ok', 0)}",
         f"- Fallback fail: {stats.get('fallback_fail', 0)}",
     ]
     return "\n".join(lines)

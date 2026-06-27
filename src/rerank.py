@@ -93,20 +93,20 @@ class RerankClient:
         self._prompt_path = prompt_path or PROMPT_PATH
         self._format_fn = format_fn
         load_dotenv()
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-        self.base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        self.api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+        self.base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1").rstrip("/")
+        self.model = os.environ.get("MINIMAX_MODEL", "MiniMax-M3")
         if not self.api_key or self.api_key == "your_api_key_here":
             raise RuntimeError(
-                "DEEPSEEK_API_KEY missing or unset. Check .env / environment."
+                "MINIMAX_API_KEY missing or unset. Check .env / environment."
             )
-        self.fallback_api_key = os.environ.get("MINIMAX_API_KEY", "").strip()
-        self.fallback_base_url = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1").rstrip("/")
-        self.fallback_model = os.environ.get("MINIMAX_MODEL", "MiniMax-M3")
+        self.fallback_api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        self.fallback_base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
+        self.fallback_model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
         self._stats_lock = threading.Lock()
         self._stats = {
-            "deepseek_ok": 0,
-            "deepseek_fail": 0,
+            "minimax_ok": 0,
+            "minimax_fail": 0,
             "fallback_ok": 0,
             "fallback_fail": 0,
         }
@@ -188,7 +188,7 @@ class RerankClient:
         if not cands:
             return []
         primary = ProviderConfig(
-            name="deepseek",
+            name="minimax",
             base_url=self.base_url,
             api_key=self.api_key,
             model=self.model,
@@ -196,11 +196,11 @@ class RerankClient:
         try:
             res = self._call_provider(primary, description, business_group, cands)
             with self._stats_lock:
-                self._stats["deepseek_ok"] += 1
+                self._stats["minimax_ok"] += 1
             return res
         except Exception as primary_err:
             with self._stats_lock:
-                self._stats["deepseek_fail"] += 1
+                self._stats["minimax_fail"] += 1
             if not self.fallback_api_key or self.fallback_api_key == "your_api_key_here":
                 raise primary_err
             fallback = ProviderConfig(

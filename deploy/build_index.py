@@ -31,7 +31,6 @@ def main() -> None:
 
     print("[2/4] Building corpus texts...")
     corpus_texts = [pn_node_embed_text(n) for n in nodes]
-    index_dir = Path
     (INDEX_DIR / "corpus.json").write_text(
         json.dumps(corpus_texts, ensure_ascii=False, indent=2),
         encoding="utf-8",
