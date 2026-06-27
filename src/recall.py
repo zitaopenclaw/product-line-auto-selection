@@ -39,10 +39,12 @@ class RecallIndex:
         )
 
     @classmethod
-    def from_pretrained(cls, index_dir: Path, model: SentenceTransformer) -> "RecallIndex":
+    def from_pretrained(cls, index_dir, model):
         import json
         import pickle
 
+        from pathlib import Path
+        index_dir = Path(index_dir)
         obj = cls.__new__(cls)
         obj.products = []
         with (index_dir / "corpus.json").open("r", encoding="utf-8") as f:
