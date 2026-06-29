@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -106,6 +106,15 @@ app = FastAPI(
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
+
+@app.middleware("http")
+async def _log_request_body(request: Request, call_next):
+    if request.url.path == "/recommend_der":
+        body = await request.body()
+        logging.warning("MIDDLEWARE RAW BODY: %s", body.decode("utf-8", errors="replace"))
+    return await call_next(request)
+
+
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -187,13 +196,20 @@ class RecommendDerRequest(BaseModel):
     query: str
     business_group: str              # IDG / DCG / SSG — passed as soft signal to rerank prompt
     service_model: str = ""          # DAAS / IAAS / ISG Lease / PROF & MGD SERVICES / SAAS / SI or Vertical
-    ars_flag: str = "No"             # Yes / No
-    ai_flag: str = "No"              # Yes / No
+    ars_flag: str = "No"             # Yes / No (also accepts JSON boolean true/false)
+    ai_flag: str = "No"              # Yes / No (also accepts JSON boolean true/false)
     scope: str = ""                  # Full D365 scope string — substring-matched against cascade keys.
     # Triggering values (pass the full string): "Standalone Asset Recovery Services Scope",
     # "Managed Services or TruScale \"as a Service\"", "Hardware Lease with Standard Services",
     # "Standalone Professional Services". Empty or non-matching values produce no cascade effect.
     existing_expansion: Optional[bool] = None  # True if expansion of existing TruScale/managed contract
+
+    @field_validator("ars_flag", "ai_flag", mode="before")
+    @classmethod
+    def _coerce_bool_flag(cls, v):
+        if isinstance(v, bool):
+            return "Yes" if v else "No"
+        return v
 
 
 @app.post("/recommend_der", dependencies=[Depends(_verify_key)])
