@@ -28,15 +28,33 @@ The auto-selection system reads DER records and uses the problem description fie
 **Source file**: `data/raw/Approved DER in 2026.xlsx`  
 **Key fields**: Opportunity ID, Business Group, "Describe the business problem or challenge"
 
+### PN Hierarchy Tree (PN Tree)
+
+Lenovo's product catalog organized as a named hierarchy built from the **Advanced PN List** — a catalog of individual Part Numbers (PNs, i.e. orderable SKUs). The tree groups PNs into named categories at up to 4 levels (L1–L4). The auto-selection system uses nodes at **L2, L3, and L4** (337 total named nodes).
+
+A **PN tree node** carries: `name`, `level` (2/3/4), `path` (ancestor names from L1 down), `pn_count` (leaf PNs underneath), and a random sample of leaf PN descriptions used for recall.
+
+**Source file**: `data/raw/Advanced PN List.xlsx` → pre-built into `output/advanced_pn_tree.json`  
+**Owner**: Helen (Product Management). Update cadence: ~monthly.
+
+**Current system scope**: both the Pre-DER Agent and the DER Input AI Agent output PN tree nodes (L2/L3/L4). This is the **primary output taxonomy** for all active development.
+
+> **⚠ Known operational risk — PN tree staleness**: the tree is baked into the Docker image at build time (`RUN python deploy/build_index.py`). When Helen updates `Advanced PN List.xlsx`, the running service does not know — recommendations silently drift until the image is rebuilt and redeployed. A silent stale index is worse than a visible error.
+>
+> **Deferred fix**: before production rollout, add an explicit staleness signal — e.g. a build timestamp in `advanced_pn_tree.json` exposed via `/health`, or a CI check that alerts when the source Excel changes. Owner of this task: TBD. Trigger: before first production seller cohort.
+
 ### Offering Hierarchy (OH)
-Lenovo's master data structure for classifying all "sellable things" from a sales/solution perspective. It is a layered taxonomy that re-organizes every product, service, and solution into a unified hierarchy, used across sales, quoting, reporting, and performance evaluation.
 
-An **OH node** (colloquially "OH product" in the codebase) is one entry in this hierarchy. Nodes carry metadata: `Product Name`, `Product ID`, `Parent Product` (the node above it), `Solution Category`, `Solution Sub-Category`, and `ISO`.
+Lenovo's master data structure for classifying all "sellable things" from a sales/solution perspective — a separate taxonomy from the PN tree. OH nodes live in D365 and are the items sellers ultimately enter into deals and DER forms.
 
-The auto-selection system matches a DER's problem description against active OH nodes to surface the most relevant offerings.
+An **OH node** carries: `Product Name`, `Product ID`, `Parent Product`, `Solution Category`, `Solution Sub-Category`, `ISO`, `Status`.
 
 **Source file**: `data/raw/OH product in D365.xlsx` (sheet: "Product Advanced Find View")  
 **Active nodes**: those where `Status ≠ "Retired"` (~2,049 of 2,223 total)
+
+> **Known gap — PN tree ↔ OH taxonomy misalignment**: PN tree nodes and OH nodes are not yet aligned. A seller receiving a PN tree node recommendation cannot reliably look up the corresponding OH entry in D365 by name. Resolving this mapping is deferred. Until resolved, the system functions as a **zone indicator** (pointing the seller to a category in the right area of the catalog) rather than a precise OH line-item lookup.
+>
+> **Current policy**: active development touches the PN tree only. Code paths that use the D365 OH product catalog (`OH product in D365.xlsx`) are **legacy/flat-mode only** and are not the focus of current work.
 
 ### Business Group (BG)
 An organizational unit within Lenovo that owns a distinct product and go-to-market domain. Two BGs are relevant to this system:
@@ -48,7 +66,7 @@ An organizational unit within Lenovo that owns a distinct product and go-to-mark
 | **SSG** — Solutions & Services Group | — | Managed services, professional services, consulting, renewals |
 
 > **BG ↔ BU label mapping across datasets**:  
-> DER Refinement Agent source files (`Approved DER in 2026.xlsx`, `OH product in D365.xlsx`) use `IDG` and `DCG`.  
+> DER Input AI Agent source files (`Approved DER in 2026.xlsx`, `OH product in D365.xlsx`) use `IDG` and `DCG`.  
 > The Advanced PN List (`data/raw/Advanced PN List.xlsx`) used by the Pre-DER Agent uses a different `Business Unit` column with values `PCSD`, `MBG`, `ISG`, `ISU`:
 >
 > | Sales BG label | PN List BU label(s) |
@@ -60,39 +78,46 @@ An organizational unit within Lenovo that owns a distinct product and go-to-mark
 > SSG and DCG share the `ISG` BU label in the Advanced PN List — they are organizationally distinct in the sales org but not differentiated in that data source.  
 > Pre-DER Agent uses BG as a **soft signal** in the rerank prompt only; no hard filter is applied to the PN tree.
 
-**[DER Refinement Agent]** The BG is a **hard filter**: a DER from one BG is only matched against OH products belonging to the same BG. Cross-BG matching is not meaningful because the two domains sell entirely different products.
+**[DER Input AI Agent]** BG is passed as a **soft signal** to the rerank prompt (same as Pre-DER Agent). The PN tree is not partitioned by BG. The `/recommend_der` API validates that `business_group` is one of IDG/DCG/SSG to catch caller errors, but does not hard-filter the recall pool.
 
 **[Pre-DER Agent]** The Pre-DER Agent matches against the PN hierarchy tree rather than the flat OH product list. The PN tree is not partitioned by BG (some branches span both IDG and DCG), so the hard filter was removed. BG is passed as a soft signal in the rerank prompt only. See the BU mapping table above and `docs/design_v2.md` §3.5.
 
 ### Auto-Selection Output & Consumption Model
-The system outputs a markdown table of top-3 OH node recommendations per DER opportunity (with score and confidence level). This output is **human-reviewed**: a sales or solution team member reads the recommendations and manually enters the chosen OH product(s) back into D365.
 
-This means:
+The system has two distinct consumption modes, both producing top-3 PN tree node recommendations (L2/L3/L4) with confidence score and level:
+
+#### Mode 1 — Batch Report (internal/ops)
+Output: markdown table (`matches_<tag>.md`) produced by running the agent pipeline offline over a full DER dataset.
+- **Consumer**: solution architects, ops team, or deal desk reviewing aggregate results across many DER opportunities
+- **Use**: validation, model quality assessment, spotting patterns across a DER cohort
+- **Flow**: run script → review markdown → manually enter chosen OH nodes into D365 if applicable
+
+#### Mode 2 — Live Copilot Topic (seller-facing)
+Output: real-time JSON response from the FastAPI service, rendered as an Adaptive Card in Microsoft Teams via Copilot Studio.
+- **Consumer**: sales reps using the Copilot Studio agent during an active sales conversation
+- **Two topics**:
+  - **Pre-DER topic** — before the DER form is finalized; seller describes customer need in free-form voice input; Copilot calls `/recommend`
+  - **DER Input topic** — during/after DER form completion; seller re-enters key DER fields via an **Adaptive Card form** presented in the Copilot conversation (not read from D365 directly); Copilot calls `/recommend_der` with those field values
+- **DER Input Adaptive Card fields**: the card collects the structured inputs that drive the field cascade — `service_model`, `ars_flag`, `ai_flag`, `scope`, `existing_expansion` — plus a free-text `query` describing the business problem
+- **Flow (Pre-DER)**: seller types/speaks description → Copilot calls `/recommend` → top-3 PN tree nodes shown as result cards in Teams
+- **Flow (DER Input)**: seller fills Adaptive Card form → Copilot calls `/recommend_der` with all fields → top-3 PN tree nodes shown as result cards in Teams
+
+#### Shared invariants (both modes)
 - The system is a **decision-support tool**, not an automation that writes back to D365 directly.
-- A "no match" result (zero candidates above threshold) is a valid, handleable outcome — the human simply proceeds without a system recommendation.
-- Confidence level precision matters for **trust calibration**, not for automated routing.
+- A "no match" result (zero candidates above threshold) is a valid, handleable outcome.
+- Confidence level precision matters for **trust calibration**, not automated routing.
 
 ---
 
-## Agent Naming (Historical Anchor)
+## Agent Naming
 
-> **Why this section exists**: Through 2026-06-25 the two pipelines were informally referred to as "V1.0" and "V2.0". On 2026-06-27 these were renamed to align with the deal-desk workflow language used by the governance team. Archived code, log files, and meeting notes may still contain the old V-labels — this table is the canonical decode key.
-
-| New name | Former label | Role | Runs on | Reads | Writes |
-|---|---|---|---|---|---|
-| **DER Refinement Agent** | V1.0 / v1.0 | Refines offering-hierarchy items against a finalized DER form; outputs the qualified DER package. In POC the output is the offering-hierarchy list. | Structured DER Excel rows (`Approved DER in 2026.xlsx`) | Flat OH product list (`OH product in D365.xlsx`) | `output/der_refinement_agent/` |
-| **Pre-DER Agent** | V2.0 / v2.0 | Recommends offering-hierarchy L2/L3/L4 items BEFORE the DER form is finalized, from free-form sales voice input. | Markdown voice inputs (`data/converted/sales-voice-inputs.md`) | PN hierarchy tree (`output/advanced_pn_tree.json`) | `output/pre_der_agent/` |
+The two agents were formerly referred to as "V1.0" (now **DER Input AI Agent**) and "V2.0" (now **Pre-DER Agent**); old labels may appear in archived output files, log directories, and meeting notes — see [ADR-0004](docs/adr/0004-agent-rename-v1-v2-to-named-agents.md) for the full decode key.
 
 **Workflow position**:
-1. Pre-DER Agent runs first (sales voice input → preliminary L2/L3/L4 recommendations).
-2. The seller enters / finalizes the DER form using those recommendations.
-3. DER Refinement Agent runs on the finalized DER form → qualified DER package (in POC: offering-hierarchy list).
+1. Pre-DER Agent runs first — sales voice input → preliminary L2/L3/L4 PN tree node recommendations.
+2. Seller uses those recommendations to complete the DER form.
+3. DER Input AI Agent runs on the finalized DER form → top-3 PN tree L2/L3/L4 node recommendations (same format).
 
-**Pipeline ordering caveat (current POC)**: today's DER Refinement Agent implementation does **not** yet consume the Pre-DER Agent output as input; it independently matches against the flat OH product list. Wiring Pre-DER output into the DER Refinement Agent's recall pool is an open next-step item (see `docs/review-2026-06-25.md` §6.1 and the new name's intent in `docs/design.md`).
-
-**Decode rules for old references**:
-- `V1.0`, `v1.0`, `output/v1.0/`, `run.py` (the original single pipeline), `rerank.txt` prompt → **DER Refinement Agent**
-- `V2.0`, `v2.0`, `output/v2.0/`, `run_v2.py`, `rerank_v2.txt` prompt (the file name retains the `_v2` suffix as an internal label; content is Pre-DER Agent's prompt) → **Pre-DER Agent**
-- `[V1.0]` / `[V2.0 changed this]` qualifiers in older prose → `[DER Refinement Agent]` / `[Pre-DER Agent]`
+**Pipeline relationship (current POC — Option C)**: both agents run independently on disjoint datasets. "Comparison at report level" means independent quality checks, not a cross-agent delta on the same deal. See `docs/design_v2.md` §9.2.
 
 ---

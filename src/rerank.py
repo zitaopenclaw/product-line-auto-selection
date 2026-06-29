@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "rerank.txt"
 
-FormatFn = callable
+from typing import Callable
+FormatFn = Callable
 
 
 @dataclass
@@ -204,7 +205,7 @@ class RerankClient:
             if not self.fallback_api_key or self.fallback_api_key == "your_api_key_here":
                 raise primary_err
             fallback = ProviderConfig(
-                name="minimax",
+                name="deepseek",
                 base_url=self.fallback_base_url,
                 api_key=self.fallback_api_key,
                 model=self.fallback_model,

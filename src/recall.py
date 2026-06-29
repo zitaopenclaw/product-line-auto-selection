@@ -1,12 +1,10 @@
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from src.load_data import OHProduct
 from src.recall_common import (
     bm25_topk,
     build_bm25,
     derive_query_text,
-    oh_embed_text,
     tokenize,
 )
 
@@ -17,14 +15,10 @@ DEFAULT_TOPK = 30
 class RecallIndex:
     def __init__(
         self,
-        products: list[OHProduct] | None = None,
         model: SentenceTransformer | None = None,
         *,
-        corpus_texts: list[str] | None = None,
+        corpus_texts: list[str],
     ):
-        self.products = products or []
-        if corpus_texts is None:
-            corpus_texts = [oh_embed_text(p) for p in self.products]
         self.corpus_texts = corpus_texts
         self.bm25 = build_bm25(self.corpus_texts)
         if model is None:
@@ -40,13 +34,13 @@ class RecallIndex:
 
     @classmethod
     def from_pretrained(cls, index_dir, model):
+        """Load a pre-built index from disk."""
         import json
         import pickle
 
         from pathlib import Path
         index_dir = Path(index_dir)
         obj = cls.__new__(cls)
-        obj.products = []
         with (index_dir / "corpus.json").open("r", encoding="utf-8") as f:
             obj.corpus_texts = json.load(f)
         with (index_dir / "bm25.pkl").open("rb") as f:

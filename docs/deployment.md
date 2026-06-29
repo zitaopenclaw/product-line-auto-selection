@@ -4,16 +4,22 @@
 
 Production stack: **Sales (Teams) → Copilot Studio → HF Spaces Docker → FastAPI → Python pipeline**
 
-A single HTTPS endpoint exposes the Pre-DER Agent's recommendation logic. No Azure subscription required for hosting (HF Spaces runs independently); Copilot Studio itself requires a Power Platform / Microsoft 365 license.
+Two Copilot Studio topics expose the two agents:
+- **Pre-DER topic** → calls `/recommend` → Pre-DER Agent (voice input → PN tree L2/L3/L4 nodes)
+- **DER Input topic** → calls `/recommend_der` → DER Input AI Agent (structured DER form → PN tree L2/L3/L4 nodes)
+
+No Azure subscription required for hosting (HF Spaces runs independently); Copilot Studio itself requires a Power Platform / Microsoft 365 license.
 
 ## Architecture
 
 ```
-┌─────────────┐     HTTP POST + X-API-Key     ┌──────────────────────────────────────┐
-│ Copilot     │ ────────────────────────────> │ Hugging Face Spaces (Docker SDK)      │
-│ Studio      │                                │                                      │
-│ (Teams)     │ <──────────────────────────── │ FastAPI /recommend + /health          │
-└─────────────┘       JSON { topk: [...] }    │                                      │
+┌─────────────────────────┐   HTTP POST + X-API-Key   ┌──────────────────────────────────────┐
+│ Copilot Studio (Teams)  │ ────────────────────────> │ Hugging Face Spaces (Docker SDK)      │
+│                         │                            │                                      │
+│ Topic 1: Pre-DER        │ ──→ /recommend             │ FastAPI /recommend                    │
+│ Topic 2: DER Input      │ ──→ /recommend_der         │      + /recommend_der + /health       │
+│                         │ <──────────────────────── │                                      │
+└─────────────────────────┘   JSON { topk: [...] }    │                                      │
                                               │  startup (lifespan):                  │
                                               │  ├─ load_pn_nodes() → 337 nodes       │
                                               │  └─ init RerankClient                │
@@ -45,14 +51,29 @@ A single HTTPS endpoint exposes the Pre-DER Agent's recommendation logic. No Azu
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
 | `/health` | GET | None | Health check |
-| `/recommend` | POST | `X-API-Key` | Take query string → return top-3 PN tree nodes |
+| `/recommend` | POST | `X-API-Key` | Pre-DER: voice query → top-3 PN tree nodes (L2/L3/L4) |
+| `/recommend_der` | POST | `X-API-Key` | DER Input: structured DER fields → top-3 PN tree nodes (L2/L3/L4) |
 
-Request body (`business_group` is optional but improves relevance as a soft signal):
+**`/recommend` request** (`business_group` is optional soft signal):
 
 ```json
 {
   "query": "customer needs managed PC deployment service for 500 employees",
   "business_group": "IDG"
+}
+```
+
+**`/recommend_der` request** (`business_group` required hard filter; remaining fields optional but improve field-cascade results):
+
+```json
+{
+  "query": "DaaS renewal with asset recovery for 800 seats",
+  "business_group": "IDG",
+  "service_model": "DAAS",
+  "ars_flag": "Yes",
+  "ai_flag": "No",
+  "scope": "Standalone Asset Recovery Services Scope",
+  "existing_expansion": true
 }
 ```
 
@@ -89,14 +110,36 @@ If `data/index/` is somehow absent at runtime, `_ensure_index()` rebuilds it laz
 
 ### 4. Copilot Studio Integration
 
-- **Topic**: Single topic for voice-input → recommendation
-- **HTTP Action**: POST to Space URL with `X-API-Key` header
-  - Header name: `X-API-Key`
-  - Header value: same as `APP_API_KEY` secret
-- **Timeout**: Set HTTP Action timeout to ≥ 60s to tolerate idle cold-start (~45s)
+Two topics, same endpoint base URL, same auth header.
+
+#### Topic 1 — Pre-DER (voice input → PN tree node)
+- **Trigger**: Seller speaks a free-form description of customer need
+- **HTTP Action**: POST `/recommend` with `X-API-Key` header
+- **Request fields**: `query` (required), `business_group` (optional, soft signal)
 - **Response parsing**: Extract `topk[0..2].name`, `.score`, `.level_label`, `.path_str`
-- **Empty result handling**: If `topk` is empty (no candidates above threshold), show a fallback message ("No matching offering found — please describe the customer need in more detail")
-- **Display**: Adaptive Card in Teams showing top-3 cards with name + path + confidence level
+- **Empty result handling**: If `topk` is empty, prompt seller: "No matching offering found — please describe the customer need in more detail"
+- **Display**: Adaptive Card in Teams showing top-3 nodes with name + path + confidence level
+
+#### Topic 2 — DER Input (structured DER form → PN tree node)
+- **Trigger**: Seller requests AI recommendation during or after DER form completion
+- **Input method**: Copilot presents an **Adaptive Card form** in Teams; seller re-enters the key DER fields directly in the conversation (fields are not read from D365 automatically)
+- **Adaptive Card fields**:
+  | Field | Values |
+  |---|---|
+  | Business problem description | Free text (`query`) |
+  | Business Group | IDG / DCG / SSG |
+  | Service Model | DAAS / IAAS / ISG Lease / PROF & MGD SERVICES / SAAS / SI or Vertical |
+  | ARS flag | Yes / No |
+  | AI/Emerging Tech flag | Yes / No |
+  | Scope | Full D365 scope string (dropdown or free text) |
+  | Existing expansion | Yes / No / Not specified |
+- **HTTP Action**: POST `/recommend_der` with `X-API-Key` header; Adaptive Card values map directly to request fields
+- **Response parsing**: Same structure as `/recommend` — `topk[0..2].name`, `.score`, `.level_label`, `.path_str`, `.level`, `.path`
+- **Comparison surface**: Both topics return the same L2/L3/L4 format; results can be compared side-by-side at the reporting layer
+
+#### Shared settings
+- **Timeout**: Set HTTP Action timeout to ≥ 60s to tolerate idle cold-start (~45s)
+- **Auth header**: `X-API-Key: <APP_API_KEY secret>`
 
 ## Deployment Steps
 
@@ -163,5 +206,5 @@ Invoke-RestMethod -Uri "https://<user>-<space-name>.hf.space/recommend" `
 ## Future Options
 
 - **Production**: Move to Azure Container Apps for tighter integration with Copilot Studio / Teams via Managed Identity (no static API key needed); or Modal/Render for simpler always-on hosting
-- **Multi-topic**: Add `/recommend_der` endpoint for DER Refinement Agent; add new topic in Copilot Studio
+- **Feedback loop**: Capture seller accepts/rejects in Copilot Studio → store in Dataverse → fine-tune recall or rerank weights
 - **API key rotation**: Rotate `APP_API_KEY` in HF Secrets without redeploy

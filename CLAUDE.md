@@ -16,19 +16,22 @@ Both agents share `src/` modules (recall, rerank, confidence). The Business Grou
 All scripts must be run from the project root (not from inside `scripts/`), because `src/` imports are resolved via `sys.path.insert(0, ROOT)`.
 
 ```bash
-# DER Refinement Agent (formerly V1.0) — POC run (default: 50 rows, 25 per BG, single-threaded)
+# DER Input AI Agent — tree mode (default): DER form → PN hierarchy L2/L3/L4 nodes
 python scripts/run_der_refinement_agent.py
 
-# DER Refinement Agent — Large run
+# DER Input AI Agent — tree mode, large run
 python scripts/run_der_refinement_agent.py --total 1000 --per-bg 500 --concurrency 10 --tag 1000
 
-# DER Refinement Agent — Resume an interrupted run (checkpoint at logs/<tag>_progress.json)
+# DER Input AI Agent — resume an interrupted run (checkpoint at logs/<tag>_progress.json)
 python scripts/run_der_refinement_agent.py --tag 1000
 
-# DER Refinement Agent — Fresh restart, ignoring checkpoint
+# DER Input AI Agent — fresh restart, ignoring checkpoint
 python scripts/run_der_refinement_agent.py --tag 1000 --fresh
 
-# Pre-DER Agent (formerly V2.0) — Default run with LLM description extraction
+# DER Input AI Agent — flat mode [DEPRECATED, not actively maintained]: DER form → flat OH product list
+python scripts/run_der_refinement_agent.py --mode flat --tag flat_run
+
+# Pre-DER Agent — Default run with LLM description extraction
 python scripts/run_pre_der_agent.py --tag my_run
 
 # Pre-DER Agent — Skip extraction, use raw voice text directly
@@ -38,7 +41,7 @@ python scripts/run_pre_der_agent.py --tag my_run --no-extract
 python scripts/run_pre_der_agent.py --tag my_run --concurrency 4
 ```
 
-The DER Refinement Agent checkpoints automatically every 20 rows. Output files are named `matches_<tag>.md`, `summary_<tag>.md`, `results_<tag>.json` in `output/der_refinement_agent/`.
+The DER Input AI Agent checkpoints automatically every 20 rows. Output files are named `matches_<tag>.md`, `summary_<tag>.md`, `results_<tag>.json` in `output/der_refinement_agent/`.
 
 ## Environment setup
 
@@ -60,22 +63,23 @@ Install dependencies: `pip install -r requirements.txt` (pulls ~1 GB including `
 
 ```
 src/
-  load_data.py         -- load DER + OH from xlsx; partition OH by BG; stratified sampling (DER Refinement Agent)
-  load_pn_tree.py      -- load advanced_pn_tree.json; DFS to 337 PNNode objects at L2/L3/L4 (Pre-DER Agent)
+  load_data.py         -- load DER + OH from xlsx; partition OH by BG; stratified sampling (DER Input AI Agent flat mode)
+  load_pn_tree.py      -- load advanced_pn_tree.json; DFS to 337 PNNode objects at L2/L3/L4 (Pre-DER Agent + DER Input AI Agent tree mode)
   parse_voice_input.py -- parse sales-voice-inputs.md; LLM extraction of clean product-need description (Pre-DER Agent)
+  pre_der_shared.py    -- shared helpers for both agents: format_candidates_block_v2, node_to_candidate
   recall_common.py     -- tokenizer, BM25 builder, embedding text formatter, query deriver
   recall.py            -- RecallIndex: builds BM25 + bge-small-en-v1.5 embeddings, union recall
   rerank.py            -- RerankClient: calls MiniMax (primary) -> DeepSeek (fallback); renders prompt
   confidence.py        -- score_to_level (High/Medium/Low/drop); keep_topk; keep_topk_diverse; keep_topk_diverse_tree
-  field_rules.py       -- structured field cascade (Helen's 6-field rule): apply_field_rules(), inject_field_candidates()
+  field_rules.py       -- structured field cascade (Helen's 6-field rule): apply_field_rules(), inject_field_candidates() [flat mode only]
 
 prompts/
-  rerank.txt           -- DER Refinement Agent prompt (BG as hard filter; flat OH candidates)
+  rerank.txt           -- DER Input AI Agent flat-mode prompt (BG as hard filter; flat OH candidates)
   rerank_v2.txt        -- Pre-DER Agent prompt (BG as soft signal; PN tree L2/L3/L4 candidates with level + path)
-  rerank_der_tree.txt  -- WIP / future variant: DER form matched against PN tree nodes (not yet wired to any pipeline)
+  rerank_der_tree.txt  -- DER Input AI Agent tree-mode prompt (BG as soft signal; PN tree L2/L3/L4 candidates)
 
 scripts/
-  run_der_refinement_agent.py        -- DER Refinement Agent batch runner (--total/--per-bg/--concurrency/--tag/--fresh)
+  run_der_refinement_agent.py        -- DER Input AI Agent batch runner (--mode tree|flat, --total/--per-bg/--concurrency/--tag/--fresh)
   run_pre_der_agent.py               -- Pre-DER Agent batch runner (--tag/--concurrency/--no-extract/--seed)
   process_pre_der_inputs.py          -- one-shot preprocessor: raw talking script -> structured voice-inputs.md
   build_pre_der_pn_tree.py           -- builds output/advanced_pn_tree.json from Advanced PN List.xlsx

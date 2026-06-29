@@ -1,8 +1,8 @@
 # Pre-DER Agent — Design Doc (formerly V2.0)
 
-> **Rename history**: previously referred to as "V2.0" / "v2.0". The agent was renamed on 2026-06-27 to **Pre-DER Agent** to align with the deal-desk workflow language. See [CONTEXT.md §"Agent Naming"](../CONTEXT.md#agent-naming-historical-anchor) for the decode key.
+> **Rename history**: previously referred to as "V2.0" / "v2.0". The agent was renamed on 2026-06-27 to **Pre-DER Agent** to align with the deal-desk workflow language. See [CONTEXT.md §"Agent Naming"](../CONTEXT.md#agent-naming) for the decode key.
 >
-> **Workflow position**: Pre-DER is the stage that runs **before** the DER form is finalized. It takes a free-form sales voice input and surfaces preliminary offering-hierarchy (L2/L3/L4) recommendations that the seller can use as a starting point when completing the DER form. The downstream stage is the DER Refinement Agent, which works on the finalized structured DER form.
+> **Workflow position**: Pre-DER is the stage that runs **before** the DER form is finalized. It takes a free-form sales voice input and surfaces preliminary PN tree node (L2/L3/L4) recommendations that the seller can use as a starting point when completing the DER form. The downstream stage is the DER Input AI Agent, which works on the finalized structured DER form and also outputs PN tree nodes.
 >
 > **Status (2026-06-23)**: 20-input experiment completed. Human validation against Helen's expectations is the primary gate before broader rollout.  
 > **Term definitions**: see [CONTEXT.md](../CONTEXT.md) for BG, BU, OH, PN terminology.
@@ -13,9 +13,10 @@
 
 The **Pre-DER Agent** takes free-form sales voice inputs — natural-language utterances a salesperson would speak to an AI agent — and matches them against the **PN product hierarchy tree** (L2/L3/L4 nodes) to recommend preliminary offering-hierarchy items. These recommendations feed into the seller's DER-form completion workflow, after which the DER Refinement Agent takes over.
 
-The match corpus is the same Lenovo catalog the DER Refinement Agent uses, but accessed through a different surface:
-- DER Refinement Agent → flat OH product list (~2,000 products, BG-partitioned).
-- Pre-DER Agent → PN hierarchy tree at L2/L3/L4 (337 named nodes, with up to 68,918 leaf PNs underneath), not partitioned by BG.
+Both agents match against the **PN hierarchy tree at L2/L3/L4** (337 named nodes, with up to 68,918 leaf PNs underneath). Neither agent uses the flat OH product list — that mode was removed as of 2026-06-28.
+
+- Pre-DER Agent → free-form voice query → PN tree nodes, BG as soft signal only
+- DER Input AI Agent → structured DER form fields → PN tree nodes, Helen's field cascade applied, BG as soft signal
 
 ---
 
@@ -64,7 +65,7 @@ Voice inputs contain noise (TCV amounts, close dates, CRM verbs, customer names)
 **Conclusion**: LLM extraction yields a modest but consistent improvement. Recommended as default.
 
 ### 3.3 Matching Corpus: PN Tree L2/L3/L4 Nodes
-The DER Refinement Agent matches against a flat OH product list (~2,000 rows). The Pre-DER Agent matches against the PN hierarchy tree nodes — a different dimension of the same catalog. The tree has 337 named L2/L3/L4 nodes with up to 68,918 leaf PNs underneath.
+Both agents match against the PN hierarchy tree nodes — 337 named L2/L3/L4 nodes with up to 68,918 leaf PNs underneath. The flat OH product list is not used by either agent.
 
 Each node's **corpus text** is constructed as:
 ```
@@ -73,7 +74,7 @@ Each node's **corpus text** is constructed as:
 The `pns:` segment uses **random 20** sampled leaf PN descriptions (seed=42). "Top 20" would be arbitrary without a relevance signal; random sampling surfaces the breadth of the node.
 
 ### 3.4 Dynamic Level Recommendation
-Unlike the DER Refinement Agent which always matched against a flat product list, the Pre-DER Agent recommends at different levels depending on match specificity. A flat index is built across **all** L2/L3/L4 nodes; the LLM scores each node on its own merits.
+Both agents recommend at different tree levels depending on match specificity — a flat index spans **all** L2/L3/L4 nodes and the LLM scores each node on its own merits.
 
 Scoring guidance in `prompts/rerank_v2.txt`:
 > "Prefer more specific (deeper) nodes when the description gives enough detail. A confident L4 match beats a vague L2 match. Accept shallower if deep nodes are too narrow."
@@ -259,7 +260,11 @@ python scripts/run_pre_der_agent.py --tag my_run --concurrency 4
 ## 9. Open Questions / Next Steps
 
 1. **Human validation**: Review `output/pre_der_agent/matches_pre_der_exp1_extracted.md` — does the recommended L2/L3/L4 node match the salesperson's actual intent? This is the primary gate before broader rollout.
-2. **Wiring into the DER Refinement Agent**: the Pre-DER Agent's L2/L3/L4 recommendations should ultimately seed the recall pool for the DER Refinement Agent (so that the refined top-3 starts from the Pre-DER proposals). This integration is **not yet implemented** in POC; today the two agents run independently. Tracked as a follow-up sprint item.
+2. **Relationship to DER Input AI Agent (decided 2026-06-28, Option C)**: Both agents now output the same format — L2/L3/L4 PN tree nodes. The POC approach is **independent parallel runs, compare at report level**: run Pre-DER Agent on voice inputs, run DER Input AI Agent on the finalized DER form, then compare results side-by-side to see whether Step 2 refines or diverges from Step 1. No pipeline chaining for POC.
+
+   > **Why Option C over pipeline chaining**: chaining (Pre-DER output seeds DER Input recall pool) adds implementation complexity and makes errors harder to attribute. Independent runs first establishes a quality baseline and reveals the natural delta between pre- and post-DER signals. Chaining is the right next step once both agents are validated independently.
+
+   **Output format alignment**: `run_der_refinement_agent.py --mode tree` (default) outputs the same L2/L3/L4 node structure as the Pre-DER Agent (`matches_pre_der_<tag>.md` vs `matches_<tag>.md`). Both use `format_candidates_block_v2` from `src/pre_der_shared.py` and `keep_topk_diverse_tree` from `src/confidence.py`.
 3. **Prompt tuning**: If certain node types are over- or under-matched (e.g. too many L2 for specific requests), adjust scoring guidance in `prompts/rerank_v2.txt`.
 4. **Corpus enrichment**: Currently 20 random PNs per node. If recall misses key nodes, consider increasing to 50 or using TF-IDF selected PNs.
 5. **Zero-match handling**: Input #8 shows a class of inputs that lack product context (CRM navigation commands). The agent should detect and prompt for clarification rather than attempting recall.
