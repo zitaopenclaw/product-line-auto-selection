@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import logging
 import os
 import sys
 import threading
@@ -9,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
@@ -196,7 +197,9 @@ class RecommendDerRequest(BaseModel):
 
 
 @app.post("/recommend_der", dependencies=[Depends(_verify_key)])
-async def recommend_der(req: RecommendDerRequest):
+async def recommend_der(req: RecommendDerRequest, request: Request):
+    body_bytes = await request.body()
+    logging.warning("RAW /recommend_der BODY: %s", body_bytes.decode("utf-8", errors="replace"))
     global _index, _der_client, _nodes
     if _der_client is None or _nodes is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
