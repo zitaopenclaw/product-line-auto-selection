@@ -211,6 +211,11 @@ class RecommendDerRequest(BaseModel):
             return "Yes" if v else "No"
         return v
 
+    @field_validator("scope", "service_model", mode="before")
+    @classmethod
+    def _coerce_null_str(cls, v):
+        return v if v is not None else ""
+
 
 @app.post("/recommend_der", dependencies=[Depends(_verify_key)])
 async def recommend_der(req: RecommendDerRequest, request: Request):
