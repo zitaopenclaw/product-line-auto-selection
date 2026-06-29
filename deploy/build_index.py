@@ -1,8 +1,4 @@
-"""Build all search indexes baked into the Docker image.
-
-Builds two sets of indexes:
-  1. Pre-DER index  (PN tree nodes → data/index/)
-  2. DER indexes    (OH products per BG → data/index/der/{BG}/)
+"""Build the PN tree search index baked into the Docker image.
 
 Run automatically by Dockerfile:  RUN python deploy/build_index.py
 Run manually:                      python deploy/build_index.py
@@ -24,7 +20,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 
 from src.recall import EMBED_MODEL_NAME
-from src.recall_common import build_bm25, oh_embed_text
+from src.recall_common import build_bm25
 
 
 # ── Shared model (loaded once, reused for both index builds) ─────────────────
@@ -73,44 +69,13 @@ def build_pre_der_index(model: SentenceTransformer) -> None:
     print(f"  Saved {len(corpus_texts)} texts to {index_dir}")
 
 
-# ── Part 2: DER indexes (OH products, per BG) ─────────────────────────────────
-
-def build_der_indexes(model: SentenceTransformer) -> None:
-    from src.load_data import OHProduct
-
-    output_dir = ROOT / "output"
-    der_root = ROOT / "data" / "index" / "der"
-
-    # Discover which BG files exist
-    bg_files = sorted(output_dir.glob("oh_products_*.json"))
-    if not bg_files:
-        print("\n[DER] No oh_products_*.json found in output/ — skipping DER index build.")
-        print("      Run: python scripts/export_oh_products.py")
-        return
-
-    print(f"\n[DER] Building OH product indexes for {len(bg_files)} BG(s)...")
-    for path in bg_files:
-        bg = path.stem.replace("oh_products_", "")
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        products = [OHProduct(**d) for d in raw]
-        corpus_texts = [oh_embed_text(p) for p in products]
-
-        index_dir = der_root / bg
-        print(f"  BG={bg}: {len(products)} products → {index_dir}")
-        _build_and_save(corpus_texts, index_dir, model, batch_size=32)
-        print(f"  Saved {len(corpus_texts)} texts to {index_dir}")
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     t_total = time.time()
-
     model = _load_model()
     build_pre_der_index(model)
-    build_der_indexes(model)
-
-    print(f"\nAll indexes built in {time.time()-t_total:.1f}s")
+    print(f"\nIndex built in {time.time()-t_total:.1f}s")
 
 
 if __name__ == "__main__":
