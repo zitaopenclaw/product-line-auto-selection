@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import logging
 import os
 import sys
 import threading
@@ -10,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Security, Request
+from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, field_validator
 
@@ -105,14 +104,6 @@ app = FastAPI(
     title="Product Line Auto-Selection API",
     swagger_ui_parameters={"persistAuthorization": True},
 )
-
-
-@app.middleware("http")
-async def _log_request_body(request: Request, call_next):
-    if request.url.path == "/recommend_der":
-        body = await request.body()
-        logging.warning("MIDDLEWARE RAW BODY: %s", body.decode("utf-8", errors="replace"))
-    return await call_next(request)
 
 
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -218,9 +209,7 @@ class RecommendDerRequest(BaseModel):
 
 
 @app.post("/recommend_der", dependencies=[Depends(_verify_key)])
-async def recommend_der(req: RecommendDerRequest, request: Request):
-    body_bytes = await request.body()
-    logging.warning("RAW /recommend_der BODY: %s", body_bytes.decode("utf-8", errors="replace"))
+async def recommend_der(req: RecommendDerRequest):
     global _index, _der_client, _nodes
     if _der_client is None or _nodes is None:
         raise HTTPException(status_code=503, detail="Service not initialized")
