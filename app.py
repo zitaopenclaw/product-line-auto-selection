@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import hmac
 import os
+import random
 import sys
 import threading
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +22,8 @@ if str(ROOT) not in sys.path:
 
 from src.load_pn_tree import PNNode
 from src.pre_der_shared import format_candidates_block_v2, node_to_candidate
+from src.feedback_store import FeedbackRecord, JsonlFeedbackStore
+from src.feedback_signal import load_feedback_index, apply_feedback_signal
 
 INDEX_DIR = ROOT / "data" / "index"
 PROMPT_PATH = ROOT / "prompts" / "rerank_v2.txt"
@@ -202,6 +207,30 @@ async def _run_hw_pipeline(query: str, canonical_bg: str, loop) -> list[dict]:
     return keep_topk_diverse_tree(merged, k=3)
 
 
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+_AB_B_RATIO = 0.9  # 90% assigned to B (feedback-weighted) group
+_FEEDBACK_INDEX_PATH = ROOT / "output" / "feedback" / "feedback_index.json"
+
+_feedback_index: dict = {}
+_feedback_index_lock = threading.Lock()
+
+
+def _load_feedback_index_cached() -> dict:
+    """Return the in-memory feedback index, loading from disk if needed."""
+    global _feedback_index
+    if not _feedback_index:
+        with _feedback_index_lock:
+            if not _feedback_index:
+                _feedback_index = load_feedback_index(_FEEDBACK_INDEX_PATH)
+    return _feedback_index
+
+
+def _get_feedback_store() -> JsonlFeedbackStore:
+    path = Path(os.environ.get("FEEDBACK_PATH", str(ROOT / "output" / "feedback" / "feedback.jsonl")))
+    return JsonlFeedbackStore(path)
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -265,7 +294,10 @@ async def recommend(req: RecommendRequest):
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
         by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
-        service_topk = keep_topk_diverse_tree(_format_topk(scored_raw, by_idx), k=3)
+        ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+        raw_topk = _format_topk(scored_raw, by_idx)
+        adjusted = apply_feedback_signal(raw_topk, _load_feedback_index_cached(), bg=req.business_group, ab_group=ab_group)
+        service_topk = keep_topk_diverse_tree(adjusted, k=3)
 
     # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
     hw_topk: list[dict] = []
@@ -357,7 +389,10 @@ async def recommend_der(req: RecommendDerRequest):
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
         by_idx = {str(j): n for j, n in zip(merged_indices, cand_nodes)}
-        service_topk = keep_topk_diverse_tree(_format_topk(scored_raw, by_idx), k=3)
+        ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+        raw_topk = _format_topk(scored_raw, by_idx)
+        adjusted = apply_feedback_signal(raw_topk, _load_feedback_index_cached(), bg=bg, ab_group=ab_group)
+        service_topk = keep_topk_diverse_tree(adjusted, k=3)
 
     # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
     hw_topk: list[dict] = []
@@ -369,3 +404,49 @@ async def recommend_der(req: RecommendDerRequest):
     if canonical_bg:
         resp["hw_recommendations"] = hw_topk
     return resp
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+class FeedbackCandidateItem(BaseModel):
+    rank: int
+    node_key: str
+    score: float
+    confidence: str
+
+
+class FeedbackRequest(BaseModel):
+    opportunity_id: str
+    bg: str
+    der_description: str
+    scope: str = ""
+    service_model: str = ""
+    ars_flag: bool = False
+    ai_flag: bool = False
+    candidates_shown: list[FeedbackCandidateItem]
+    user_selected_rank: Optional[int] = None
+    is_negative: bool = False
+    negative_hint: Optional[str] = None
+
+
+@app.post("/feedback", dependencies=[Depends(_verify_key)])
+async def submit_feedback(req: FeedbackRequest):
+    ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+    record = FeedbackRecord(
+        feedback_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        opportunity_id=req.opportunity_id,
+        bg=req.bg,
+        der_description=req.der_description,
+        scope=req.scope,
+        service_model=req.service_model,
+        ars_flag=req.ars_flag,
+        ai_flag=req.ai_flag,
+        candidates_shown=[c.model_dump() for c in req.candidates_shown],
+        user_selected_rank=req.user_selected_rank,
+        is_negative=req.is_negative,
+        negative_hint=req.negative_hint,
+        ab_group=ab_group,
+    )
+    _get_feedback_store().write(record)
+    return {"status": "ok", "feedback_id": record.feedback_id, "ab_group": ab_group}
