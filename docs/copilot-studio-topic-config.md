@@ -124,6 +124,14 @@ Sources of truth for this spec:
       "valueOff": "No"
     },
     {
+      "type": "Input.Toggle",
+      "id": "existing_expansion",
+      "title": "Expansion of existing TruScale / managed contract",
+      "value": "false",
+      "valueOn": "Yes",
+      "valueOff": "No"
+    },
+    {
       "type": "Input.ChoiceSet",
       "id": "scope",
       "label": "Scope of opportunity",
@@ -158,11 +166,11 @@ Sources of truth for this spec:
 | URL | `https://zitangopenclaw-product-line-auto-selection.hf.space/recommend_der` |
 | Header 1 | `X-API-Key` = `product-line-entry-agent` |
 | Header 2 | `Content-Type` = `application/json` |
-| Body (PowerFx) | `{query: Topic.query, business_group: Topic.business_group, service_model: Topic.service_model, ars_flag: Topic.ars_flag, ai_flag: Topic.ai_flag, scope: Topic.scope}` |
+| Body (PowerFx) | `{query: Topic.query, business_group: Topic.business_group, service_model: Topic.service_model, ars_flag: Topic.ars_flag, ai_flag: Topic.ai_flag, existing_expansion: If(Topic.existing_expansion = "Yes", true, false), scope: Topic.scope}` |
 | Timeout (ms) | 60000 |
 | Response handling | `Save response as: DerApiResponse` (record), Response data type: `topk` (table of records) |
 
-Null-handling note (important): when optional DER fields are empty, use empty string `""` semantics for `scope`/`service_model`; avoid explicit JSON `null`. Current backend has defensive coercion (`null -> ""`) to prevent HTTP 422 regressions.
+Null-handling note (important): when optional DER fields are empty, use empty string `""` semantics for `scope`/`service_model`; avoid explicit JSON `null`. Current backend has defensive coercion (`null -> ""`) to prevent HTTP 422 regressions. For boolean toggles (`ars_flag`, `ai_flag`, `existing_expansion`): Copilot Studio sends `"Yes"`/`"No"` strings; backend coerces to bool. If a toggle is not interacted with, it sends `"false"` (the `value` default) which the backend treats as `False`.
 
 ### 2.4 Node 3: Message (Send a Message)
 
@@ -174,13 +182,55 @@ Null-handling note (important): when optional DER fields are empty, use empty st
 
 ---
 
-## §3 Pre-DER Topic Configuration
+## §3 Version Info Topic Configuration
 
 ### 3.1 Trigger
 - Type: **On Recognized Intent** (default)
+- Description: "Returns the current agent version, release notes, and pipeline roadmap."
+- Trigger phrases: `version`, `what version is this`, `what's new`, `release notes`, `changelog`
+
+### 3.2 Node 1: Message (Send a Message)
+
+| Field | Value |
+|---|---|
+| Type | Send a message |
+| Modality | Text (plain, no PowerFx) |
+
+**Message text (paste as-is):**
+
+```
+📦 Product Line Entry AI Agent — v0.1.2
+Released: 29 June 2026
+
+What's new in this version:
+• Pre-DER Agent: PN tree matching at L2/L3/L4 (Top-3 recommendations)
+• DER Refinement Agent: 3-stage recall → rerank → confidence scoring
+• Diversity filter: avoids recommending sibling nodes from the same parent
+• Bug fix: scope null coerced to "" to ensure DER topic works per design
+
+What's in pipeline:
+1. HW product info added into recall index
+2. Recommendation quality feedback loop
+3. Adaptive Card output rendering for DER & Pre-DER results
+4. Voice dictation support in Pre-DER topic
+5. Pre-DER topic: complete configuration & publish
+
+For questions or feedback: wujj4@lenovo.com or tangzhi2@lenovo.com
+```
+
+### 3.3 Node 2: End conversation
+
+No variables, no HTTP Request, no Adaptive Card JSON needed.
+
+---
+
+## §4 Pre-DER Topic Configuration
+
+### 4.1 Trigger
+- Type: **On Recognized Intent** (default)
 - Description: "Takes free-form sales voice input (raw transcript OK) and returns top-3 PN tree L2/L3/L4 nodes."
 
-### 3.2 Node 1: Question (free text)
+### 4.2 Node 1: Question (free text)
 
 | Field | Value |
 |---|---|
@@ -189,7 +239,7 @@ Null-handling note (important): when optional DER fields are empty, use empty st
 | Identify | User's entire response |
 | Output | Variable `query` (string), captured via "Save user response as" |
 
-### 3.3 Node 2: HTTP Request
+### 4.3 Node 2: HTTP Request
 
 | Field | Value |
 |---|---|
@@ -202,7 +252,7 @@ Null-handling note (important): when optional DER fields are empty, use empty st
 | Timeout (ms) | 60000 |
 | Response handling | `Save response as: PreDerApiResponse` (record), Response data type: `topk` (table of records) |
 
-### 3.4 Node 3: Message (Send a Message)
+### 4.4 Node 3: Message (Send a Message)
 
 | Field | Value |
 |---|---|
@@ -212,9 +262,9 @@ Null-handling note (important): when optional DER fields are empty, use empty st
 
 ---
 
-## §4 Playwright Automation Strategy
+## §5 Playwright Automation Strategy
 
-### §4.1 Known gotchas (documented to prevent re-discovery)
+### §5.1 Known gotchas (documented to prevent re-discovery)
 
 | Operation | Gotcha | Workaround |
 |---|---|---|
@@ -227,7 +277,7 @@ Null-handling note (important): when optional DER fields are empty, use empty st
 | Chrome auto-closing | can't detach Python process | `subprocess.Popen + DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP` |
 | CDP connection hang | websocket lock-up after long sessions | respawn Chrome, reconnect `/json/version` |
 
-### §4.2 Primitives library (`scripts/_copilot_primitives.py`)
+### §5.2 Primitives library (`scripts/_copilot_primitives.py`)
 
 Each primitive is contract-tested and returns `(ok: bool, info: dict)`.
 
@@ -249,16 +299,16 @@ Each primitive is contract-tested and returns `(ok: bool, info: dict)`.
 - `set_http_body(c, body_text)` — paste PowerFx body
 - `screenshot(c, name)` — save to `.playwright-mcp/run/<name>.png`
 
-### §4.3 Execution runbooks
+### §5.3 Execution runbooks
 
 DER topic: 12 steps (see §2 node order)
-Pre-DER topic: 8 steps (see §3 node order)
+Pre-DER topic: 8 steps (see §4 node order)
 
 Each step = (action, verify, screenshot, checkpoint)
 
 ---
 
-## §5 Test Plan
+## §6 Test Plan
 
 ### DER Test Cases
 
@@ -279,7 +329,7 @@ Each step = (action, verify, screenshot, checkpoint)
 
 ---
 
-## §6 Checkpoint & Resume Protocol
+## §7 Checkpoint & Resume Protocol
 
 File: `pac-setup/copilot-progress.json`
 
@@ -308,7 +358,7 @@ Each step writes a checkpoint on success. Re-running the script reads checkpoint
 
 ---
 
-## §7 Pre-Publish Self-Check
+## §8 Pre-Publish Self-Check
 
 ```
 [ ] Topic checker: 0 errors for both topics
@@ -322,7 +372,7 @@ Each step writes a checkpoint on success. Re-running the script reads checkpoint
 
 ---
 
-## §8 Risks and Fallbacks
+## §9 Risks and Fallbacks
 
 | Risk | Fallback |
 |---|---|
