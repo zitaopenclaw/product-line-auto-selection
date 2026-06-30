@@ -144,7 +144,10 @@ class TestRecommendIntegration:
 
         resp = client.post("/recommend", json={"query": "some query"}, headers={"X-API-Key": "test-key"})
         assert resp.status_code == 200
-        assert resp.json() == {"topk": []}
+        data = resp.json()
+        assert data["topk"] == []
+        assert data["service_recommendations"] == []
+        assert "hw_recommendations" not in data  # no BG specified → no HW pipeline
 
     def test_not_initialized_returns_503(self, monkeypatch):
         monkeypatch.setenv("APP_API_KEY", "test-key")
@@ -259,7 +262,10 @@ class TestRecommendDerIntegration:
             headers={"X-API-Key": "test-key"},
         )
         assert resp.status_code == 200
-        assert resp.json() == {"topk": []}
+        data = resp.json()
+        assert data["topk"] == []
+        assert data["service_recommendations"] == []
+        assert "hw_recommendations" in data  # IDG → HW pipeline present (even if empty)
 
     def test_top1_score_and_level_label_correct(self, monkeypatch):
         m = _reimport()

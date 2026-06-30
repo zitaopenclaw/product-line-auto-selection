@@ -82,9 +82,41 @@ An organizational unit within Lenovo that owns a distinct product and go-to-mark
 
 **[Pre-DER Agent]** The Pre-DER Agent matches against the PN hierarchy tree rather than the flat OH product list. The PN tree is not partitioned by BG (some branches span both IDG and DCG), so the hard filter was removed. BG is passed as a soft signal in the rerank prompt only. See the BU mapping table above and `docs/design_v2.md` §3.5.
 
+### HW Product Catalog
+
+Hardware product taxonomy files used as the source for `hw_recommendations`. Separate from the PN Tree (which covers service offerings only).
+
+| BG | Source file | Levels indexed | Unique nodes |
+|----|------------|---------------|-------------|
+| **IDG** | `data/raw/IDG_Product Category_HW Related.xlsx` | L2/L3/L4 (deepest available; fallback up if empty) | ~26 L2 / ~211 L3 / ~2k L4 |
+| **ISG** | `data/raw/DCG_Product_Catagory_20260624110842.xlsx` | L2/L3 (file only has 3 levels) | 42 L2 / 553 L3 |
+
+> **Terminology note:** The ISG file is named `DCG_…` because DCG (Data Center Group) and ISG (Infrastructure Solutions Group) are used interchangeably at Lenovo. **ISG is the canonical term** used throughout this system.
+
+Pre-built tree artifacts: `output/idg_pn_tree.json`, `output/isg_pn_tree.json`  
+Build scripts: `scripts/build_idg_tree.py`, `scripts/build_isg_tree.py`
+
+HW catalog nodes carry: `name`, `level`, `path`, `source_bg` (IDG or ISG). They do **not** have PN descriptions (no PN column in source files) — embedding text is built from the hierarchy path + node name only.
+
+SSG has no HW catalog. SSG queries return service offerings only.
+
+---
+
 ### Auto-Selection Output & Consumption Model
 
-The system has two distinct consumption modes, both producing top-3 PN tree node recommendations (L2/L3/L4) with confidence score and level:
+The system has two distinct consumption modes. For BG=IDG and BG=ISG, each mode now produces **dual recommendations**; for BG=SSG, service recommendations only.
+
+#### Dual-output response schema (IDG/ISG)
+```json
+{
+  "service_recommendations": [ {"node": "...", "score": 0.9, "level": "L3", "path": [...]} ],
+  "hw_recommendations":      [ {"node": "...", "score": 0.85, "level": "L3", "path": [...]} ]
+}
+```
+SSG returns `service_recommendations` only (`hw_recommendations` absent or empty).
+
+HW pipeline (IDG/ISG): separate `RecallIndex` per BG (hard filter) → no field cascade → `rerank_hw.txt` prompt → `keep_topk_diverse_tree(k=3)`.  
+Service pipeline (all BGs): unchanged — shared PN Tree, soft BG signal, field cascade, existing prompts.
 
 #### Mode 1 — Batch Report (internal/ops)
 Output: markdown table (`matches_<tag>.md`) produced by running the agent pipeline offline over a full DER dataset.
@@ -99,8 +131,9 @@ Output: real-time JSON response from the FastAPI service, rendered as an Adaptiv
   - **Pre-DER topic** — before the DER form is finalized; seller describes customer need in free-form voice input; Copilot calls `/recommend`
   - **DER Input topic** — during/after DER form completion; seller re-enters key DER fields via an **Adaptive Card form** presented in the Copilot conversation (not read from D365 directly); Copilot calls `/recommend_der` with those field values
 - **DER Input Adaptive Card fields**: the card collects the structured inputs that drive the field cascade — `service_model`, `ars_flag`, `ai_flag`, `scope`, `existing_expansion` — plus a free-text `query` describing the business problem
-- **Flow (Pre-DER)**: seller types/speaks description → Copilot calls `/recommend` → top-3 PN tree nodes shown as result cards in Teams
-- **Flow (DER Input)**: seller fills Adaptive Card form → Copilot calls `/recommend_der` with all fields → top-3 PN tree nodes shown as result cards in Teams
+- **Flow (Pre-DER)**: seller types/speaks → Copilot calls `/recommend` → top-3 service cards (+ top-3 HW cards for IDG/ISG) in Teams
+- **Flow (DER Input)**: seller fills Adaptive Card → Copilot calls `/recommend_der` → same dual/single output logic
+- **Note**: Copilot Studio Adaptive Card UI update for dual-output display is **deferred**
 
 #### Shared invariants (both modes)
 - The system is a **decision-support tool**, not an automation that writes back to D365 directly.

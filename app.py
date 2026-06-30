@@ -23,16 +23,24 @@ from src.pre_der_shared import format_candidates_block_v2, node_to_candidate
 INDEX_DIR = ROOT / "data" / "index"
 PROMPT_PATH = ROOT / "prompts" / "rerank_v2.txt"
 DER_PROMPT_PATH = ROOT / "prompts" / "rerank_der_tree.txt"
+HW_PROMPT_PATH = ROOT / "prompts" / "rerank_hw.txt"
+
+# BGs that have a HW catalog; value is the canonical BG name for the index.
+_HW_BGS = {"IDG": "IDG", "ISG": "ISG", "DCG": "ISG"}
 
 # ── Global state ──────────────────────────────────────────────────────────────
 
 _index = None
 _client = None       # Pre-DER rerank client (rerank_v2.txt)
 _der_client = None   # DER Input rerank client (rerank_der_tree.txt)
+_hw_client = None    # HW catalog rerank client (rerank_hw.txt)
 _nodes: list[PNNode] | None = None
+_hw_nodes: dict[str, list[PNNode]] = {}   # canonical_bg -> PNNode list
+_hw_index: dict[str, object] = {}         # canonical_bg -> RecallIndex
 _model = None        # shared SentenceTransformer instance
 
 _index_lock = threading.Lock()
+_hw_index_locks: dict[str, threading.Lock] = {"IDG": threading.Lock(), "ISG": threading.Lock()}
 
 ENDPOINT_TIMEOUT = 50.0   # seconds; stay under Copilot Studio's 60s limit
 
@@ -41,14 +49,25 @@ ENDPOINT_TIMEOUT = 50.0   # seconds; stay under Copilot Studio's 60s limit
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _client, _der_client, _nodes
+    global _client, _der_client, _hw_client, _nodes, _hw_nodes
 
     from src.rerank import RerankClient
-    from src.load_pn_tree import load_pn_nodes
+    from src.load_pn_tree import load_pn_nodes, load_hw_nodes
 
     _nodes = load_pn_nodes()
     _client = RerankClient(prompt_path=PROMPT_PATH, format_fn=format_candidates_block_v2)
     _der_client = RerankClient(prompt_path=DER_PROMPT_PATH, format_fn=format_candidates_block_v2)
+
+    if HW_PROMPT_PATH.exists():
+        _hw_client = RerankClient(prompt_path=HW_PROMPT_PATH, format_fn=format_candidates_block_v2)
+        for bg in ("IDG", "ISG"):
+            try:
+                _hw_nodes[bg] = load_hw_nodes(bg)
+            except FileNotFoundError as e:
+                print(f"[startup] HW tree not found for {bg}: {e}", file=sys.stderr)
+    else:
+        print(f"[startup] HW prompt not found at {HW_PROMPT_PATH}; HW pipeline disabled.",
+              file=sys.stderr)
     yield
 
 
@@ -97,6 +116,92 @@ def _ensure_index():
         _index = RecallIndex.from_pretrained(INDEX_DIR, model)
 
 
+def _ensure_hw_index(canonical_bg: str) -> None:
+    """Lazily build BM25+embedding index for one HW catalog (IDG or ISG)."""
+    if canonical_bg in _hw_index:
+        return
+    with _hw_index_locks[canonical_bg]:
+        if canonical_bg in _hw_index:
+            return
+        nodes = _hw_nodes.get(canonical_bg)
+        if not nodes:
+            return
+
+        import json as _json
+        import pickle
+        import numpy as np
+        from src.recall import RecallIndex
+        from src.recall_common import build_bm25
+        from src.load_pn_tree import pn_node_embed_text
+
+        hw_dir = ROOT / "data" / "index" / f"hw_{canonical_bg.lower()}"
+        model = _get_model()
+
+        if not (hw_dir / "embeddings.npy").exists():
+            hw_dir.mkdir(parents=True, exist_ok=True)
+            corpus_texts = [pn_node_embed_text(n) for n in nodes]
+            (hw_dir / "corpus.json").write_text(_json.dumps(corpus_texts), encoding="utf-8")
+            bm25 = build_bm25(corpus_texts)
+            (hw_dir / "bm25.pkl").write_bytes(pickle.dumps(bm25))
+            embeddings = model.encode(
+                corpus_texts, convert_to_numpy=True,
+                normalize_embeddings=True, show_progress_bar=False, batch_size=8,
+            )
+            np.save(str(hw_dir / "embeddings.npy"), embeddings)
+
+        _hw_index[canonical_bg] = RecallIndex.from_pretrained(hw_dir, model)
+
+
+def _format_topk(scored_raw, nodes_by_idx) -> list[dict]:
+    """Convert raw rerank scores to response dicts."""
+    from src.confidence import score_to_level
+    results = []
+    for s in scored_raw:
+        n = nodes_by_idx.get(s["product_id"])
+        if not n:
+            continue
+        results.append({
+            "node_key": n.node_key,
+            "name": n.name,
+            "level": f"L{n.level}",
+            "path": n.path,
+            "path_str": " > ".join(n.path),
+            "pn_count": n.pn_count,
+            "score": s["score"],
+            "level_label": score_to_level(s["score"]),
+        })
+    return results
+
+
+async def _run_hw_pipeline(query: str, canonical_bg: str, loop) -> list[dict]:
+    """BM25+dense recall → rerank against the HW catalog for one BG. No field cascade."""
+    from src.confidence import keep_topk_diverse_tree
+
+    nodes = _hw_nodes.get(canonical_bg, [])
+    hw_idx = _hw_index.get(canonical_bg)
+    if not nodes or hw_idx is None or _hw_client is None:
+        return []
+
+    cand_indices = hw_idx.recall(query, topk=60)[:30]
+    if not cand_indices:
+        return []
+
+    cand_nodes = [nodes[j] for j in cand_indices]
+    cand_objs = [node_to_candidate(n, j) for j, n in zip(cand_indices, cand_nodes)]
+
+    try:
+        scored_raw = await asyncio.wait_for(
+            loop.run_in_executor(None, _hw_client.rerank, query, canonical_bg, cand_objs),
+            timeout=ENDPOINT_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return []
+
+    by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
+    merged = _format_topk(scored_raw, by_idx)
+    return keep_topk_diverse_tree(merged, k=3)
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -142,50 +247,43 @@ async def recommend(req: RecommendRequest):
     if _index is None:
         raise HTTPException(status_code=503, detail="Index not available")
 
-    cand_indices = _index.recall(req.query, topk=60)[:30]
-    if not cand_indices:
-        return {"topk": []}
-
-    cand_nodes = [_nodes[j] for j in cand_indices]
-    cand_objs = [node_to_candidate(n, j) for j, n in zip(cand_indices, cand_nodes)]
-
-    from src.confidence import keep_topk_diverse_tree, score_to_level
-
+    canonical_bg = _HW_BGS.get(req.business_group.strip().upper(), "") if req.business_group else ""
     loop = asyncio.get_event_loop()
-    try:
-        scored_raw = await asyncio.wait_for(
-            loop.run_in_executor(None, _client.rerank, req.query, req.business_group, cand_objs),
-            timeout=ENDPOINT_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
 
-    by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
-    merged = []
-    for s in scored_raw:
-        n = by_idx.get(s["product_id"])
-        if not n:
-            continue
-        merged.append({
-            "node_key": n.node_key,
-            "name": n.name,
-            "level": f"L{n.level}",
-            "path": n.path,
-            "path_str": " > ".join(n.path),
-            "pn_count": n.pn_count,
-            "score": s["score"],
-            "level_label": score_to_level(s["score"]),
-        })
+    # ── Service pipeline (always) ──────────────────────────────────────────────
+    cand_indices = _index.recall(req.query, topk=60)[:30]
+    service_topk: list[dict] = []
+    if cand_indices:
+        cand_nodes = [_nodes[j] for j in cand_indices]
+        cand_objs = [node_to_candidate(n, j) for j, n in zip(cand_indices, cand_nodes)]
+        from src.confidence import keep_topk_diverse_tree
+        try:
+            scored_raw = await asyncio.wait_for(
+                loop.run_in_executor(None, _client.rerank, req.query, req.business_group, cand_objs),
+                timeout=ENDPOINT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
+        by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
+        service_topk = keep_topk_diverse_tree(_format_topk(scored_raw, by_idx), k=3)
 
-    topk = keep_topk_diverse_tree(merged, k=3)
-    return {"topk": topk}
+    # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
+    hw_topk: list[dict] = []
+    if canonical_bg and _hw_client is not None:
+        _ensure_hw_index(canonical_bg)
+        hw_topk = await _run_hw_pipeline(req.query, canonical_bg, loop)
+
+    resp: dict = {"topk": service_topk, "service_recommendations": service_topk}
+    if canonical_bg:
+        resp["hw_recommendations"] = hw_topk
+    return resp
 
 
 # ── DER Input: structured DER fields → PN tree nodes ─────────────────────────
 
 class RecommendDerRequest(BaseModel):
     query: str
-    business_group: str              # IDG / DCG / SSG — passed as soft signal to rerank prompt
+    business_group: str              # IDG / ISG / DCG / SSG — passed as soft signal to rerank prompt
     service_model: str = ""          # DAAS / IAAS / ISG Lease / PROF & MGD SERVICES / SAAS / SI or Vertical
     ars_flag: str = "No"             # Yes / No (also accepts JSON boolean true/false)
     ai_flag: str = "No"              # Yes / No (also accepts JSON boolean true/false)
@@ -217,13 +315,17 @@ async def recommend_der(req: RecommendDerRequest):
     if _index is None:
         raise HTTPException(status_code=503, detail="Index not available")
 
-    bg = req.business_group.strip().upper()
-    if bg not in ("IDG", "DCG", "SSG"):
-        raise HTTPException(status_code=400, detail="business_group must be IDG, DCG, or SSG")
+    bg_raw = req.business_group.strip().upper()
+    if bg_raw not in ("IDG", "DCG", "ISG", "SSG"):
+        raise HTTPException(status_code=400, detail="business_group must be IDG, ISG/DCG, or SSG")
+    bg = _HW_BGS.get(bg_raw, bg_raw)   # normalize DCG → ISG
+    canonical_bg = _HW_BGS.get(bg_raw, "")
 
     from src.load_data import DERRow
     from src.field_rules import apply_field_rules_tree, inject_field_candidates_tree
-    from src.confidence import keep_topk_diverse_tree, score_to_level
+    from src.confidence import keep_topk_diverse_tree
+
+    loop = asyncio.get_event_loop()
 
     synthetic_row = DERRow(
         opportunity_id="api-request",
@@ -243,37 +345,27 @@ async def recommend_der(req: RecommendDerRequest):
     rules = apply_field_rules_tree(synthetic_row, _nodes)
     merged_indices = inject_field_candidates_tree(recall_indices, _nodes, rules, max_candidates=30)
 
-    if not merged_indices:
-        return {"topk": []}
+    service_topk: list[dict] = []
+    if merged_indices:
+        cand_nodes = [_nodes[j] for j in merged_indices]
+        cand_objs = [node_to_candidate(n, j) for j, n in zip(merged_indices, cand_nodes)]
+        try:
+            scored_raw = await asyncio.wait_for(
+                loop.run_in_executor(None, _der_client.rerank, req.query, bg, cand_objs),
+                timeout=ENDPOINT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
+        by_idx = {str(j): n for j, n in zip(merged_indices, cand_nodes)}
+        service_topk = keep_topk_diverse_tree(_format_topk(scored_raw, by_idx), k=3)
 
-    cand_nodes = [_nodes[j] for j in merged_indices]
-    cand_objs = [node_to_candidate(n, j) for j, n in zip(merged_indices, cand_nodes)]
+    # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
+    hw_topk: list[dict] = []
+    if canonical_bg and _hw_client is not None:
+        _ensure_hw_index(canonical_bg)
+        hw_topk = await _run_hw_pipeline(req.query, canonical_bg, loop)
 
-    loop = asyncio.get_event_loop()
-    try:
-        scored_raw = await asyncio.wait_for(
-            loop.run_in_executor(None, _der_client.rerank, req.query, bg, cand_objs),
-            timeout=ENDPOINT_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
-
-    by_idx = {str(j): n for j, n in zip(merged_indices, cand_nodes)}
-    merged = []
-    for s in scored_raw:
-        n = by_idx.get(s["product_id"])
-        if not n:
-            continue
-        merged.append({
-            "node_key": n.node_key,
-            "name": n.name,
-            "level": f"L{n.level}",
-            "path": n.path,
-            "path_str": " > ".join(n.path),
-            "pn_count": n.pn_count,
-            "score": s["score"],
-            "level_label": score_to_level(s["score"]),
-        })
-
-    topk = keep_topk_diverse_tree(merged, k=3)
-    return {"topk": topk}
+    resp: dict = {"topk": service_topk, "service_recommendations": service_topk}
+    if canonical_bg:
+        resp["hw_recommendations"] = hw_topk
+    return resp
