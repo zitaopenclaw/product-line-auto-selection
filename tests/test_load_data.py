@@ -7,10 +7,7 @@ import pytest
 
 from src.load_data import (
     DERRow,
-    OHProduct,
-    index_oh_by_bg,
     load_der,
-    load_oh,
     stratified_sample,
 )
 
@@ -58,52 +55,6 @@ class TestLoadDer:
         rows = load_der(sample_der_path)
         ids = {r.opportunity_id for r in rows}
         assert "OPP-TEST-NOBG" not in ids
-
-
-# ── load_oh ─────────────────────────────────────────────────────────────────
-
-
-class TestLoadOh:
-    def test_loads_active_rows(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path, drop_retired=True)
-        statuses = {p.status for p in products}
-        assert "Retired" not in statuses
-
-    def test_returns_oh_product_instances(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path)
-        assert all(isinstance(p, OHProduct) for p in products)
-
-    def test_can_include_retired_when_flag_false(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path, drop_retired=False)
-        assert any(p.status == "Retired" for p in products)
-
-    def test_required_fields_populated(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path)
-        for p in products:
-            assert p.product_id
-            assert p.product_name
-            assert p.business_group
-
-    def test_business_group_field_loaded(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path)
-        bgs = {p.business_group for p in products}
-        assert "IDG" in bgs
-        assert "DCG" in bgs
-        assert "SSG" in bgs
-
-
-# ── index_oh_by_bg ──────────────────────────────────────────────────────────
-
-
-class TestIndexOhByBg:
-    def test_groups_products_by_bg(self, sample_oh_path: Path):
-        products = load_oh(sample_oh_path)
-        idx = index_oh_by_bg(products)
-        assert "IDG" in idx
-        assert "DCG" in idx
-        assert "SSG" in idx
-        for bg, plist in idx.items():
-            assert all(p.business_group == bg for p in plist)
 
 
 # ── stratified_sample ───────────────────────────────────────────────────────

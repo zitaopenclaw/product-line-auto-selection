@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from src.confidence import keep_topk_diverse_tree, score_to_level
 from src.load_pn_tree import PNNode, load_pn_nodes, pn_node_embed_text
 from src.parse_voice_input import VoiceInput, extract_descriptions, parse_voice_inputs_md
+from src.pre_der_shared import format_candidates_block_v2, node_to_candidate
 from src.recall import RecallIndex
 from src.rerank import Candidate, RerankClient
 
@@ -47,33 +48,6 @@ def md_escape(value) -> str:
     s = s.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
     s = s.replace("|", "\\|")
     return s.strip() or "—"
-
-
-def format_candidates_block_v2(cands: Iterable[Candidate]) -> str:
-    lines = []
-    for i, c in enumerate(cands, 1):
-        parts = []
-        if c.solution_category:
-            parts.append(f"level={c.solution_category}")
-        parts.append(f"name={c.product_name}")
-        if c.parent_product:
-            parts.append(f"path={c.parent_product}")
-        if c.solution_sub_category:
-            parts.append(f"sample_pns={c.solution_sub_category}")
-        lines.append(f"{i}. " + " | ".join(parts))
-    return "\n".join(lines)
-
-
-def node_to_candidate(node: PNNode, idx: int) -> Candidate:
-    sample_pns = "; ".join(node.sampled_pn_descs[:6])
-    return Candidate(
-        product_id=str(idx),
-        product_name=node.name,
-        parent_product=" > ".join(node.path),
-        solution_category=f"L{node.level}",
-        solution_sub_category=sample_pns or None,
-        iso=None,
-    )
 
 
 def process_one(
@@ -107,9 +81,9 @@ def process_one(
         scored_raw = client.rerank(query, vi.bg, cand_objs)
         after_stats = client.get_stats()
 
-        if after_stats["fallback_ok"] > before_stats["fallback_ok"]:
+        if after_stats["minimax_ok"] > before_stats["minimax_ok"]:
             out["provider_used"] = "minimax"
-        elif after_stats["deepseek_ok"] > before_stats["deepseek_ok"]:
+        elif after_stats["fallback_ok"] > before_stats["fallback_ok"]:
             out["provider_used"] = "deepseek"
         else:
             out["provider_used"] = "unknown"
@@ -128,7 +102,7 @@ def process_one(
                 "path_str": " > ".join(n.path),
                 "pn_count": n.pn_count,
                 "score": s["score"],
-                "level_label": score_to_level(s["score"]) or "None",
+                "level_label": score_to_level(s["score"]),
             })
 
         out["topk"] = keep_topk_diverse_tree(merged, k=3)
@@ -282,9 +256,9 @@ def build_summary(rows: list[dict], stats: dict, elapsed: float, tag: str) -> st
         "",
         "## LLM Provider Stats",
         "",
-        f"- DeepSeek OK: {stats.get('deepseek_ok', 0)}",
-        f"- DeepSeek fail: {stats.get('deepseek_fail', 0)}",
-        f"- Fallback (MiniMax) OK: {stats.get('fallback_ok', 0)}",
+        f"- MiniMax OK: {stats.get('minimax_ok', 0)}",
+        f"- MiniMax fail: {stats.get('minimax_fail', 0)}",
+        f"- Fallback (DeepSeek) OK: {stats.get('fallback_ok', 0)}",
         f"- Fallback fail: {stats.get('fallback_fail', 0)}",
     ]
     return "\n".join(lines)

@@ -7,10 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "raw"
 
 DER_PATH = DATA_DIR / "Approved DER in 2026.xlsx"
-OH_PATH = DATA_DIR / "OH product in D365.xlsx"
 
 DER_SHEET = "Approved DER in 2026"
-OH_SHEET = "Product Advanced Find View"
 
 
 @dataclass
@@ -25,18 +23,6 @@ class DERRow:
     is_ars: Optional[bool] = None                 # Asset Recovery Services opportunity
     scope: Optional[str] = None                   # Scope of this opportunity
 
-
-@dataclass
-class OHProduct:
-    product_guid: str
-    product_name: str
-    product_id: str
-    status: str
-    business_group: str
-    parent_product: Optional[str] = None
-    solution_category: Optional[str] = None
-    solution_sub_category: Optional[str] = None
-    iso: Optional[str] = None
 
 
 def _clean(value):
@@ -80,19 +66,6 @@ _DER_COLS = [
     "The Scope of This Opportunity",
 ]
 
-# --- OH column name fragments ---
-_OH_COLS = [
-    "(Do Not Modify) Product",
-    "Product ID",
-    "Product Name",
-    "Status",
-    "Business Group",
-    "Parent Product",
-    "ISO",
-    "Solution Category",
-    "Solution Sub-Category",
-]
-
 
 def load_der(path: Path = DER_PATH) -> list[DERRow]:
     wb = openpyxl.load_workbook(path, data_only=True)
@@ -124,43 +97,6 @@ def load_der(path: Path = DER_PATH) -> list[DERRow]:
     return rows
 
 
-def load_oh(path: Path = OH_PATH, drop_retired: bool = True) -> list[OHProduct]:
-    wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb[OH_SHEET]
-    col = _header_index(ws, _OH_COLS)
-
-    rows = []
-    for r in range(2, ws.max_row + 1):
-        status = _clean(ws.cell(row=r, column=col.get("Status", 16)).value)
-        if drop_retired and (status or "").lower() == "retired":
-            continue
-        guid = _clean(ws.cell(row=r, column=col.get("(Do Not Modify) Product", 1)).value)
-        pid = _clean(ws.cell(row=r, column=col.get("Product ID", 4)).value)
-        name = _clean(ws.cell(row=r, column=col.get("Product Name", 5)).value)
-        bg = _clean(ws.cell(row=r, column=col.get("Business Group", 18)).value)
-        if not name or not pid or not bg:
-            continue
-        rows.append(OHProduct(
-            product_guid=guid or "",
-            product_name=name,
-            product_id=pid,
-            status=status or "",
-            business_group=bg,
-            parent_product=_clean(ws.cell(row=r, column=col.get("Parent Product", 9)).value),
-            solution_category=_clean(ws.cell(row=r, column=col.get("Solution Category", 11)).value),
-            solution_sub_category=_clean(ws.cell(row=r, column=col.get("Solution Sub-Category", 12)).value),
-            iso=_clean(ws.cell(row=r, column=col.get("ISO", 10)).value),
-        ))
-    return rows
-
-
-def index_oh_by_bg(oh_products: list[OHProduct]) -> dict[str, list[OHProduct]]:
-    idx: dict[str, list[OHProduct]] = {}
-    for p in oh_products:
-        idx.setdefault(p.business_group, []).append(p)
-    return idx
-
-
 def stratified_sample(der_rows: list[DERRow], per_bg: int, seed: int = 42) -> list[DERRow]:
     import random
     rng = random.Random(seed)
@@ -176,11 +112,7 @@ def stratified_sample(der_rows: list[DERRow], per_bg: int, seed: int = 42) -> li
 
 if __name__ == "__main__":
     der = load_der()
-    oh = load_oh()
     print(f"DER rows: {len(der)}")
-    print(f"OH rows (active): {len(oh)}")
-    idx = index_oh_by_bg(oh)
-    print(f"OH by BG: { {k: len(v) for k, v in idx.items()} }")
     sample = stratified_sample(der, per_bg=25)
     print(f"Sample size: {len(sample)}")
     # Show structured field coverage

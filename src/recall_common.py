@@ -24,18 +24,6 @@ def bm25_topk(query: str, bm25: BM25Okapi, k: int) -> list[int]:
     return idx_sorted[:k]
 
 
-def oh_embed_text(p) -> str:
-    parts = [p.product_name]
-    if p.parent_product:
-        parts.append(f"parent: {p.parent_product}")
-    if p.solution_category:
-        parts.append(f"category: {p.solution_category}")
-    if p.solution_sub_category:
-        parts.append(f"sub-category: {p.solution_sub_category}")
-    if p.iso:
-        parts.append(f"ISO: {p.iso}")
-    return " | ".join(parts)
-
 
 def derive_query_text(description: str, max_chars: int = 2000) -> str:
     if not description:

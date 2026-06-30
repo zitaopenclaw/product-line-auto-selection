@@ -4,12 +4,10 @@ from __future__ import annotations
 import pytest
 from rank_bm25 import BM25Okapi
 
-from src.load_data import OHProduct
 from src.recall_common import (
     bm25_topk,
     build_bm25,
     derive_query_text,
-    oh_embed_text,
     tokenize,
 )
 
@@ -83,57 +81,6 @@ class TestBm25Topk:
         result = bm25_topk("", bm25, k=2)
         assert len(result) == 2
 
-
-# ── oh_embed_text ────────────────────────────────────────────────────────────
-
-
-def _oh(
-    product_name: str = "Test Product",
-    parent_product: str | None = None,
-    solution_category: str | None = None,
-    solution_sub_category: str | None = None,
-    iso: str | None = None,
-) -> OHProduct:
-    return OHProduct(
-        product_guid="g",
-        product_name=product_name,
-        product_id="pid",
-        status="Active",
-        business_group="IDG",
-        parent_product=parent_product,
-        solution_category=solution_category,
-        solution_sub_category=solution_sub_category,
-        iso=iso,
-    )
-
-
-class TestOhEmbedText:
-    def test_includes_product_name(self):
-        result = oh_embed_text(_oh(product_name="My Product"))
-        assert "My Product" in result
-
-    def test_omits_missing_fields(self):
-        result = oh_embed_text(_oh(product_name="X"))
-        assert "parent:" not in result
-        assert "category:" not in result
-
-    def test_includes_all_present_fields(self):
-        result = oh_embed_text(_oh(
-            product_name="X",
-            parent_product="Y",
-            solution_category="C",
-            solution_sub_category="S",
-            iso="I",
-        ))
-        assert "X" in result
-        assert "parent: Y" in result
-        assert "category: C" in result
-        assert "sub-category: S" in result
-        assert "ISO: I" in result
-
-    def test_uses_pipe_separator(self):
-        result = oh_embed_text(_oh(product_name="A", parent_product="B"))
-        assert " | " in result
 
 
 # ── derive_query_text ───────────────────────────────────────────────────────

@@ -48,12 +48,12 @@ class TestScoreToLevel:
     def test_exactly_low_threshold_returns_low(self):
         assert score_to_level(LOW_THRESHOLD) == "Low"
 
-    def test_below_low_threshold_returns_none(self):
-        assert score_to_level(0.39) is None
-        assert score_to_level(0.0) is None
+    def test_below_low_threshold_returns_none_label(self):
+        assert score_to_level(0.39) == "None"
+        assert score_to_level(0.0) == "None"
 
-    def test_none_input_returns_none(self):
-        assert score_to_level(None) is None
+    def test_none_input_returns_none_label(self):
+        assert score_to_level(None) == "None"
 
 
 # ── keep_topk ───────────────────────────────────────────────────────────────
@@ -177,3 +177,31 @@ class TestKeepTopkDiverseTree:
         ]
         result = keep_topk_diverse_tree(scored, k=3)
         assert [c["name"] for c in result] == ["a"]
+
+    def test_fills_deferred_when_all_ancestor_descendant(self):
+        # All three form a strict ancestor chain → deferred fill must supply slots 2 & 3
+        scored = [
+            {"path": ["A", "B"], "score": 0.9, "name": "root"},
+            {"path": ["A", "B", "C"], "score": 0.8, "name": "child"},
+            {"path": ["A", "B", "C", "D"], "score": 0.7, "name": "grandchild"},
+        ]
+        result = keep_topk_diverse_tree(scored, k=3)
+        assert len(result) == 3
+        assert result[0]["name"] == "root"
+        # child and grandchild filled from deferred in score order
+        assert result[1]["name"] == "child"
+        assert result[2]["name"] == "grandchild"
+
+    def test_deferred_fill_partial_conflict(self):
+        # First two slots filled diversely; third must come from deferred
+        scored = [
+            {"path": ["A", "B"], "score": 0.9, "name": "p1"},
+            {"path": ["X", "Y"], "score": 0.85, "name": "p2"},
+            {"path": ["A", "B", "C"], "score": 0.8, "name": "p3"},  # descendant of p1 → deferred
+        ]
+        result = keep_topk_diverse_tree(scored, k=3)
+        assert len(result) == 3
+        names = [c["name"] for c in result]
+        assert "p1" in names
+        assert "p2" in names
+        assert "p3" in names  # filled from deferred

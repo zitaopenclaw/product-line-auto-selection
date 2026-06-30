@@ -1,0 +1,452 @@
+from __future__ import annotations
+
+import asyncio
+import hmac
+import os
+import random
+import sys
+import threading
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, field_validator
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.load_pn_tree import PNNode
+from src.pre_der_shared import format_candidates_block_v2, node_to_candidate
+from src.feedback_store import FeedbackRecord, JsonlFeedbackStore
+from src.feedback_signal import load_feedback_index, apply_feedback_signal
+
+INDEX_DIR = ROOT / "data" / "index"
+PROMPT_PATH = ROOT / "prompts" / "rerank_v2.txt"
+DER_PROMPT_PATH = ROOT / "prompts" / "rerank_der_tree.txt"
+HW_PROMPT_PATH = ROOT / "prompts" / "rerank_hw.txt"
+
+# BGs that have a HW catalog; value is the canonical BG name for the index.
+_HW_BGS = {"IDG": "IDG", "ISG": "ISG", "DCG": "ISG"}
+
+# ── Global state ──────────────────────────────────────────────────────────────
+
+_index = None
+_client = None       # Pre-DER rerank client (rerank_v2.txt)
+_der_client = None   # DER Input rerank client (rerank_der_tree.txt)
+_hw_client = None    # HW catalog rerank client (rerank_hw.txt)
+_nodes: list[PNNode] | None = None
+_hw_nodes: dict[str, list[PNNode]] = {}   # canonical_bg -> PNNode list
+_hw_index: dict[str, object] = {}         # canonical_bg -> RecallIndex
+_model = None        # shared SentenceTransformer instance
+
+_index_lock = threading.Lock()
+_hw_index_locks: dict[str, threading.Lock] = {"IDG": threading.Lock(), "ISG": threading.Lock()}
+
+ENDPOINT_TIMEOUT = 50.0   # seconds; stay under Copilot Studio's 60s limit
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _client, _der_client, _hw_client, _nodes, _hw_nodes
+
+    from src.rerank import RerankClient
+    from src.load_pn_tree import load_pn_nodes, load_hw_nodes
+
+    _nodes = load_pn_nodes()
+    _client = RerankClient(prompt_path=PROMPT_PATH, format_fn=format_candidates_block_v2)
+    _der_client = RerankClient(prompt_path=DER_PROMPT_PATH, format_fn=format_candidates_block_v2)
+
+    if HW_PROMPT_PATH.exists():
+        _hw_client = RerankClient(prompt_path=HW_PROMPT_PATH, format_fn=format_candidates_block_v2)
+        for bg in ("IDG", "ISG"):
+            try:
+                _hw_nodes[bg] = load_hw_nodes(bg)
+            except FileNotFoundError as e:
+                print(f"[startup] HW tree not found for {bg}: {e}", file=sys.stderr)
+    else:
+        print(f"[startup] HW prompt not found at {HW_PROMPT_PATH}; HW pipeline disabled.",
+              file=sys.stderr)
+    yield
+
+
+# ── Shared embedding model ────────────────────────────────────────────────────
+
+def _get_model():
+    global _model
+    if _model is None:
+        from sentence_transformers import SentenceTransformer
+        from src.recall import EMBED_MODEL_NAME
+        _model = SentenceTransformer(EMBED_MODEL_NAME)
+    return _model
+
+
+# ── PN tree index (lazy, shared by both endpoints) ────────────────────────────
+
+def _ensure_index():
+    global _index
+    if _index is not None:
+        return
+    with _index_lock:
+        if _index is not None:
+            return
+        import json
+        import pickle
+
+        import numpy as np
+        from src.recall import RecallIndex
+        from src.recall_common import build_bm25
+        from src.load_pn_tree import pn_node_embed_text
+
+        model = _get_model()
+
+        if not (INDEX_DIR / "embeddings.npy").exists():
+            INDEX_DIR.mkdir(parents=True, exist_ok=True)
+            corpus_texts = [pn_node_embed_text(n) for n in _nodes]
+            (INDEX_DIR / "corpus.json").write_text(json.dumps(corpus_texts), encoding="utf-8")
+            bm25 = build_bm25(corpus_texts)
+            (INDEX_DIR / "bm25.pkl").write_bytes(pickle.dumps(bm25))
+            embeddings = model.encode(
+                corpus_texts, convert_to_numpy=True,
+                normalize_embeddings=True, show_progress_bar=False, batch_size=8,
+            )
+            np.save(str(INDEX_DIR / "embeddings.npy"), embeddings)
+
+        _index = RecallIndex.from_pretrained(INDEX_DIR, model)
+
+
+def _ensure_hw_index(canonical_bg: str) -> None:
+    """Lazily build BM25+embedding index for one HW catalog (IDG or ISG)."""
+    if canonical_bg in _hw_index:
+        return
+    with _hw_index_locks[canonical_bg]:
+        if canonical_bg in _hw_index:
+            return
+        nodes = _hw_nodes.get(canonical_bg)
+        if not nodes:
+            return
+
+        import json as _json
+        import pickle
+        import numpy as np
+        from src.recall import RecallIndex
+        from src.recall_common import build_bm25
+        from src.load_pn_tree import pn_node_embed_text
+
+        hw_dir = ROOT / "data" / "index" / f"hw_{canonical_bg.lower()}"
+        model = _get_model()
+
+        if not (hw_dir / "embeddings.npy").exists():
+            hw_dir.mkdir(parents=True, exist_ok=True)
+            corpus_texts = [pn_node_embed_text(n) for n in nodes]
+            (hw_dir / "corpus.json").write_text(_json.dumps(corpus_texts), encoding="utf-8")
+            bm25 = build_bm25(corpus_texts)
+            (hw_dir / "bm25.pkl").write_bytes(pickle.dumps(bm25))
+            embeddings = model.encode(
+                corpus_texts, convert_to_numpy=True,
+                normalize_embeddings=True, show_progress_bar=False, batch_size=8,
+            )
+            np.save(str(hw_dir / "embeddings.npy"), embeddings)
+
+        _hw_index[canonical_bg] = RecallIndex.from_pretrained(hw_dir, model)
+
+
+def _format_topk(scored_raw, nodes_by_idx) -> list[dict]:
+    """Convert raw rerank scores to response dicts."""
+    from src.confidence import score_to_level
+    results = []
+    for s in scored_raw:
+        n = nodes_by_idx.get(s["product_id"])
+        if not n:
+            continue
+        results.append({
+            "node_key": n.node_key,
+            "name": n.name,
+            "level": f"L{n.level}",
+            "path": n.path,
+            "path_str": " > ".join(n.path),
+            "pn_count": n.pn_count,
+            "score": s["score"],
+            "level_label": score_to_level(s["score"]),
+        })
+    return results
+
+
+async def _run_hw_pipeline(query: str, canonical_bg: str, loop) -> list[dict]:
+    """BM25+dense recall → rerank against the HW catalog for one BG. No field cascade."""
+    from src.confidence import keep_topk_diverse_tree
+
+    nodes = _hw_nodes.get(canonical_bg, [])
+    hw_idx = _hw_index.get(canonical_bg)
+    if not nodes or hw_idx is None or _hw_client is None:
+        return []
+
+    cand_indices = hw_idx.recall(query, topk=60)[:30]
+    if not cand_indices:
+        return []
+
+    cand_nodes = [nodes[j] for j in cand_indices]
+    cand_objs = [node_to_candidate(n, j) for j, n in zip(cand_indices, cand_nodes)]
+
+    try:
+        scored_raw = await asyncio.wait_for(
+            loop.run_in_executor(None, _hw_client.rerank, query, canonical_bg, cand_objs),
+            timeout=ENDPOINT_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return []
+
+    by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
+    merged = _format_topk(scored_raw, by_idx)
+    return keep_topk_diverse_tree(merged, k=3)
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+_AB_B_RATIO = 0.9  # 90% assigned to B (feedback-weighted) group
+_FEEDBACK_INDEX_PATH = ROOT / "output" / "feedback" / "feedback_index.json"
+
+_feedback_index: dict = {}
+_feedback_index_lock = threading.Lock()
+
+
+def _load_feedback_index_cached() -> dict:
+    """Return the in-memory feedback index, loading from disk if needed."""
+    global _feedback_index
+    if not _feedback_index:
+        with _feedback_index_lock:
+            if not _feedback_index:
+                _feedback_index = load_feedback_index(_FEEDBACK_INDEX_PATH)
+    return _feedback_index
+
+
+def _get_feedback_store() -> JsonlFeedbackStore:
+    path = Path(os.environ.get("FEEDBACK_PATH", str(ROOT / "output" / "feedback" / "feedback.jsonl")))
+    return JsonlFeedbackStore(path)
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    lifespan=lifespan,
+    title="Product Line Auto-Selection API",
+    swagger_ui_parameters={"persistAuthorization": True},
+)
+
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+async def _verify_key(x_api_key: str | None = Security(_api_key_header)):
+    expected = os.environ.get("APP_API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Server auth not configured")
+    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+# ── Pre-DER: free-text voice input → PN tree nodes ───────────────────────────
+
+class RecommendRequest(BaseModel):
+    query: str
+    business_group: str = ""
+
+
+@app.post("/recommend", dependencies=[Depends(_verify_key)])
+async def recommend(req: RecommendRequest):
+    global _index, _client, _nodes
+    if _client is None or _nodes is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    _ensure_index()
+    if _index is None:
+        raise HTTPException(status_code=503, detail="Index not available")
+
+    canonical_bg = _HW_BGS.get(req.business_group.strip().upper(), "") if req.business_group else ""
+    loop = asyncio.get_event_loop()
+
+    # ── Service pipeline (always) ──────────────────────────────────────────────
+    cand_indices = _index.recall(req.query, topk=60)[:30]
+    service_topk: list[dict] = []
+    if cand_indices:
+        cand_nodes = [_nodes[j] for j in cand_indices]
+        cand_objs = [node_to_candidate(n, j) for j, n in zip(cand_indices, cand_nodes)]
+        from src.confidence import keep_topk_diverse_tree
+        try:
+            scored_raw = await asyncio.wait_for(
+                loop.run_in_executor(None, _client.rerank, req.query, req.business_group, cand_objs),
+                timeout=ENDPOINT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
+        by_idx = {str(j): n for j, n in zip(cand_indices, cand_nodes)}
+        ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+        raw_topk = _format_topk(scored_raw, by_idx)
+        adjusted = apply_feedback_signal(raw_topk, _load_feedback_index_cached(), bg=req.business_group, ab_group=ab_group)
+        service_topk = keep_topk_diverse_tree(adjusted, k=3)
+
+    # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
+    hw_topk: list[dict] = []
+    if canonical_bg and _hw_client is not None:
+        _ensure_hw_index(canonical_bg)
+        hw_topk = await _run_hw_pipeline(req.query, canonical_bg, loop)
+
+    resp: dict = {"topk": service_topk, "service_recommendations": service_topk}
+    if canonical_bg:
+        resp["hw_recommendations"] = hw_topk
+    return resp
+
+
+# ── DER Input: structured DER fields → PN tree nodes ─────────────────────────
+
+class RecommendDerRequest(BaseModel):
+    query: str
+    business_group: str              # IDG / ISG / DCG / SSG — passed as soft signal to rerank prompt
+    service_model: str = ""          # DAAS / IAAS / ISG Lease / PROF & MGD SERVICES / SAAS / SI or Vertical
+    ars_flag: str = "No"             # Yes / No (also accepts JSON boolean true/false)
+    ai_flag: str = "No"              # Yes / No (also accepts JSON boolean true/false)
+    scope: str = ""                  # Full D365 scope string — substring-matched against cascade keys.
+    # Triggering values (pass the full string): "Standalone Asset Recovery Services Scope",
+    # "Managed Services or TruScale \"as a Service\"", "Hardware Lease with Standard Services",
+    # "Standalone Professional Services". Empty or non-matching values produce no cascade effect.
+    existing_expansion: Optional[bool] = None  # True if expansion of existing TruScale/managed contract
+
+    @field_validator("ars_flag", "ai_flag", mode="before")
+    @classmethod
+    def _coerce_bool_flag(cls, v):
+        if isinstance(v, bool):
+            return "Yes" if v else "No"
+        return v
+
+    @field_validator("scope", "service_model", mode="before")
+    @classmethod
+    def _coerce_null_str(cls, v):
+        return v if v is not None else ""
+
+
+@app.post("/recommend_der", dependencies=[Depends(_verify_key)])
+async def recommend_der(req: RecommendDerRequest):
+    global _index, _der_client, _nodes
+    if _der_client is None or _nodes is None:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    _ensure_index()
+    if _index is None:
+        raise HTTPException(status_code=503, detail="Index not available")
+
+    bg_raw = req.business_group.strip().upper()
+    if bg_raw not in ("IDG", "DCG", "ISG", "SSG"):
+        raise HTTPException(status_code=400, detail="business_group must be IDG, ISG/DCG, or SSG")
+    bg = _HW_BGS.get(bg_raw, bg_raw)   # normalize DCG → ISG
+    canonical_bg = _HW_BGS.get(bg_raw, "")
+
+    from src.load_data import DERRow
+    from src.field_rules import apply_field_rules_tree, inject_field_candidates_tree
+    from src.confidence import keep_topk_diverse_tree
+
+    loop = asyncio.get_event_loop()
+
+    synthetic_row = DERRow(
+        opportunity_id="api-request",
+        business_group=bg,
+        description=req.query,
+        service_model=req.service_model or None,
+        is_ars=(req.ars_flag.strip().lower() == "yes") if req.ars_flag else None,
+        is_emerging_tech=(req.ai_flag.strip().lower() == "yes") if req.ai_flag else None,
+        scope=req.scope or None,
+        is_existing_expansion=req.existing_expansion,
+    )
+
+    # BM25 + dense recall against shared PN tree index
+    recall_indices = _index.recall(req.query, topk=60)
+
+    # Field cascade: boost/inject PN tree nodes matching structured DER fields
+    rules = apply_field_rules_tree(synthetic_row, _nodes)
+    merged_indices = inject_field_candidates_tree(recall_indices, _nodes, rules, max_candidates=30)
+
+    service_topk: list[dict] = []
+    if merged_indices:
+        cand_nodes = [_nodes[j] for j in merged_indices]
+        cand_objs = [node_to_candidate(n, j) for j, n in zip(merged_indices, cand_nodes)]
+        try:
+            scored_raw = await asyncio.wait_for(
+                loop.run_in_executor(None, _der_client.rerank, req.query, bg, cand_objs),
+                timeout=ENDPOINT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Recommendation timed out, please retry.")
+        by_idx = {str(j): n for j, n in zip(merged_indices, cand_nodes)}
+        ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+        raw_topk = _format_topk(scored_raw, by_idx)
+        adjusted = apply_feedback_signal(raw_topk, _load_feedback_index_cached(), bg=bg, ab_group=ab_group)
+        service_topk = keep_topk_diverse_tree(adjusted, k=3)
+
+    # ── HW pipeline (IDG / ISG only) ──────────────────────────────────────────
+    hw_topk: list[dict] = []
+    if canonical_bg and _hw_client is not None:
+        _ensure_hw_index(canonical_bg)
+        hw_topk = await _run_hw_pipeline(req.query, canonical_bg, loop)
+
+    resp: dict = {"topk": service_topk, "service_recommendations": service_topk}
+    if canonical_bg:
+        resp["hw_recommendations"] = hw_topk
+    return resp
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+class FeedbackCandidateItem(BaseModel):
+    rank: int
+    node_key: str
+    score: float
+    confidence: str
+
+
+class FeedbackRequest(BaseModel):
+    opportunity_id: str
+    bg: str
+    der_description: str
+    scope: str = ""
+    service_model: str = ""
+    ars_flag: bool = False
+    ai_flag: bool = False
+    candidates_shown: list[FeedbackCandidateItem]
+    user_selected_rank: Optional[int] = None
+    is_negative: bool = False
+    negative_hint: Optional[str] = None
+
+
+@app.post("/feedback", dependencies=[Depends(_verify_key)])
+async def submit_feedback(req: FeedbackRequest):
+    ab_group = "B" if random.random() < _AB_B_RATIO else "A"
+    record = FeedbackRecord(
+        feedback_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        opportunity_id=req.opportunity_id,
+        bg=req.bg,
+        der_description=req.der_description,
+        scope=req.scope,
+        service_model=req.service_model,
+        ars_flag=req.ars_flag,
+        ai_flag=req.ai_flag,
+        candidates_shown=[c.model_dump() for c in req.candidates_shown],
+        user_selected_rank=req.user_selected_rank,
+        is_negative=req.is_negative,
+        negative_hint=req.negative_hint,
+        ab_group=ab_group,
+    )
+    _get_feedback_store().write(record)
+    return {"status": "ok", "feedback_id": record.feedback_id, "ab_group": ab_group}
