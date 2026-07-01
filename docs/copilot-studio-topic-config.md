@@ -19,7 +19,7 @@
 
 ### DER Topic
 - Topic ID: `085cab51-6060-46cd-97e1-569120d644af`
-- State: feedback loop nodes added (v0.3)
+- State: feedback loop nodes (v0.3) + hw_recommendations display (v0.4) added; all bot-facing strings in English
 
 ### Pre-DER Topic
 - Topic ID: TBD (newly created blank, ID captured during run)
@@ -299,17 +299,17 @@ beginDialog:
               "body": [
                 {
                   "type": "TextBlock",
-                  "text": "你倾向于选哪个方向？",
+                  "text": "Which option do you prefer?",
                   "weight": "Bolder",
                   "size": "Medium",
                   "wrap": true
                 }
               ],
               "actions": [
-                { "type": "Action.Submit", "title": "选 1", "data": { "FeedbackChoice": "选 1" } },
-                { "type": "Action.Submit", "title": "选 2", "data": { "FeedbackChoice": "选 2" } },
-                { "type": "Action.Submit", "title": "选 3", "data": { "FeedbackChoice": "选 3" } },
-                { "type": "Action.Submit", "title": "都不对", "data": { "FeedbackChoice": "都不对" } }
+                { "type": "Action.Submit", "title": "Option 1", "data": { "FeedbackChoice": "Option 1" } },
+                { "type": "Action.Submit", "title": "Option 2", "data": { "FeedbackChoice": "Option 2" } },
+                { "type": "Action.Submit", "title": "Option 3", "data": { "FeedbackChoice": "Option 3" } },
+                { "type": "Action.Submit", "title": "None of these", "data": { "FeedbackChoice": "None of these" } }
               ]
             }
           output:
@@ -326,7 +326,7 @@ beginDialog:
           id: conditionGroup_feedback
           conditions:
             - id: conditionItem_negative
-              condition: =Topic.FeedbackChoice = "都不对"
+              condition: =Topic.FeedbackChoice = "None of these"
               actions:
                 # 4-C-i: Ask for negative hint
                 - kind: Question
@@ -334,7 +334,7 @@ beginDialog:
                   interruptionPolicy:
                     allowInterruption: false
                   variable: init:Topic.NegativeHint
-                  prompt: '能简单描述一下你觉得正确的方向是什么吗？（直接输入"跳过"可略过此步）'
+                  prompt: 'Could you briefly describe what you think the right direction is? (Type "skip" to skip this step)'
                   entity: StringPrebuiltEntity
 
                 # 4-C-ii: POST negative feedback
@@ -363,7 +363,7 @@ beginDialog:
                         ),
                         user_selected_rank: Blank(),
                         is_negative: true,
-                        negative_hint: If(Topic.NegativeHint = "跳过" || IsBlank(Topic.NegativeHint), Blank(), Topic.NegativeHint)
+                        negative_hint: If(Topic.NegativeHint = "skip" || IsBlank(Topic.NegativeHint), Blank(), Topic.NegativeHint)
                       }
                   errorHandling:
                     kind: ContinueOnErrorBehavior
@@ -395,7 +395,7 @@ beginDialog:
                       {rank: 2, node_key: Index(Topic.DerApiResponse.topk, 2).node_key, score: Index(Topic.DerApiResponse.topk, 2).score, confidence: Index(Topic.DerApiResponse.topk, 2).level_label},
                       {rank: 3, node_key: Index(Topic.DerApiResponse.topk, 3).node_key, score: Index(Topic.DerApiResponse.topk, 3).score, confidence: Index(Topic.DerApiResponse.topk, 3).level_label}
                     ),
-                    user_selected_rank: Switch(Topic.FeedbackChoice, "选 1", 1, "选 2", 2, "选 3", 3),
+                    user_selected_rank: Switch(Topic.FeedbackChoice, "Option 1", 1, "Option 2", 2, "Option 3", 3),
                     is_negative: false,
                     negative_hint: Blank()
                   }
@@ -407,7 +407,7 @@ beginDialog:
         # 4-D: Thank you
         - kind: SendActivity
           id: sendActivity_feedback_thanks
-          activity: 感谢反馈！祝填写顺利 ✅
+          activity: Thanks for the feedback! Good luck with the rest of the form ✅
 
 inputType: {}
 outputType: {}
@@ -415,26 +415,26 @@ outputType: {}
 
 ---
 
-## §3 DER Topic — Node 变更说明 (v0.2 → v0.4)
+## §3 DER Topic — Node Change Log (v0.2 → v0.4)
 
-| 节点 ID | 类型 | 状态 | 说明 |
+| Node ID | Type | Status | Description |
 |---|---|---|---|
-| `question_gIjyHG` | Question | 未改动 | 询问 OpptyID |
-| `qhjc7e` | AdaptiveCardPrompt | 未改动 | DER 表单卡片 |
-| `hbP5eP` | HttpRequestAction | **改动** | v0.3: `responseSchema.topk` 新增 `node_key: String`；v0.4: `responseSchema` 新增 `hw_recommendations` table |
-| `conditionGroup_lmu0Q4` | ConditionGroup | **改动** | `elseActions` 新增 4 个反馈节点 + v0.4 新增 HW 展示节点 |
-| `sendActivity_aG1xBI` | SendActivity | 未改动 | 展示服务推荐结果（`topk`） |
-| `conditionGroup_hw` / `sendActivity_hwList` | ConditionGroup / SendActivity | **新增 (v0.4)** | 若 `hw_recommendations` 非空则展示硬件推荐 |
-| `adaptiveCard_feedback_choice` | AdaptiveCardPrompt | **新增** | 4 按钮反馈卡片 → `Topic.FeedbackChoice` |
-| `conditionGroup_feedback` | ConditionGroup | **新增** | 按 `FeedbackChoice` 分流正/负反馈 |
-| `question_negative_hint` | Question | **新增** | 负反馈追问（StringPrebuiltEntity，支持"跳过"） |
-| `httpRequest_feedback_neg` | HttpRequestAction | **新增** | POST `/feedback`，`is_negative: true` |
-| `httpRequest_feedback_pos` | HttpRequestAction | **新增** | POST `/feedback`，`user_selected_rank` 由 Switch 映射 |
-| `sendActivity_feedback_thanks` | SendActivity | **新增** | 感谢消息 |
+| `question_gIjyHG` | Question | Unchanged | Ask for OpptyID |
+| `qhjc7e` | AdaptiveCardPrompt | Unchanged | DER form card |
+| `hbP5eP` | HttpRequestAction | **Changed** | v0.3: `responseSchema.topk` gained `node_key: String`; v0.4: `responseSchema` gained `hw_recommendations` table |
+| `conditionGroup_lmu0Q4` | ConditionGroup | **Changed** | `elseActions` gained 4 feedback nodes + v0.4 HW display node |
+| `sendActivity_aG1xBI` | SendActivity | Unchanged | Displays service recommendation results (`topk`) |
+| `conditionGroup_hw` / `sendActivity_hwList` | ConditionGroup / SendActivity | **Added (v0.4)** | Shows HW recommendations when `hw_recommendations` is non-empty |
+| `adaptiveCard_feedback_choice` | AdaptiveCardPrompt | **Added** | 4-button feedback card → `Topic.FeedbackChoice` |
+| `conditionGroup_feedback` | ConditionGroup | **Added** | Branches positive/negative feedback by `FeedbackChoice` |
+| `question_negative_hint` | Question | **Added** | Negative-feedback follow-up question (StringPrebuiltEntity, supports "skip") |
+| `httpRequest_feedback_neg` | HttpRequestAction | **Added** | POST `/feedback`, `is_negative: true` |
+| `httpRequest_feedback_pos` | HttpRequestAction | **Added** | POST `/feedback`, `user_selected_rank` mapped via Switch |
+| `sendActivity_feedback_thanks` | SendActivity | **Added** | Thank-you message |
 
-### Topic 变量清单 (v0.3 完整)
+### Topic Variable List (complete as of v0.4)
 
-| 变量 | 类型 | 来源 |
+| Variable | Type | Source |
 |---|---|---|
 | `Topic.OpptyID` | String | `question_gIjyHG` Question |
 | `Topic.actionSubmitId` | String | `qhjc7e` AdaptiveCardPrompt |
@@ -448,13 +448,13 @@ outputType: {}
 | `Topic.DerStatusCode` | Number | `hbP5eP` errorHandling |
 | `Topic.DerApiResponse` | Record | `hbP5eP` response |
 | `Topic.FeedbackActionId` | String | `adaptiveCard_feedback_choice` |
-| `Topic.FeedbackChoice` | String ("选 1"/"选 2"/"选 3"/"都不对") | `adaptiveCard_feedback_choice` |
+| `Topic.FeedbackChoice` | String ("Option 1"/"Option 2"/"Option 3"/"None of these") | `adaptiveCard_feedback_choice` |
 | `Topic.NegativeHint` | String | `question_negative_hint` |
 | `Topic.FeedbackResponse` | Record | `httpRequest_feedback_neg` / `httpRequest_feedback_pos` |
 
 ---
 
-## §4 Pre-DER Topic Configuration（未改动）
+## §4 Pre-DER Topic Configuration (unchanged)
 
 ### 4.1 Trigger
 - Type: **On Recognized Intent** (default)
@@ -494,7 +494,7 @@ outputType: {}
 
 ## §5 Test Plan
 
-### DER 推荐测试（原有）
+### DER Recommendation Tests (existing)
 
 | # | BG | ServiceModel | ARS | AI | Scope | Query | Expected |
 |---|---|---|---|---|---|---|---|
@@ -503,16 +503,16 @@ outputType: {}
 | 3 | SSG | PROF & MGD SERVICES | No | No | Standalone Professional Services | "advisory engagement for cloud migration" | top-1 hits consulting |
 | 4 | (leave blank) | - | - | - | - | "test" | Card rejects (Required error on BG and query) |
 
-### DER 反馈测试（v0.3 新增）
+### DER Feedback Tests (added in v0.3)
 
-| # | 操作 | Expected in Copilot | Expected in `feedback.jsonl` |
+| # | Action | Expected in Copilot | Expected in `feedback.jsonl` |
 |---|---|---|---|
-| F-1 | 正常推荐后点"选 1" | 显示"感谢反馈！祝填写顺利 ✅" | `user_selected_rank=1, is_negative=false, ab_group∈{A,B}` |
-| F-2 | 点"选 2" | 显示感谢消息 | `user_selected_rank=2, is_negative=false` |
-| F-3 | 点"都不对" → 输入"应该是 HW Lease" | 显示感谢消息 | `is_negative=true, negative_hint="应该是 HW Lease"` |
-| F-4 | 点"都不对" → 输入"跳过" | 显示感谢消息 | `is_negative=true, negative_hint=null` |
+| F-1 | After a normal recommendation, click "Option 1" | Shows "Thanks for the feedback! Good luck with the rest of the form ✅" | `user_selected_rank=1, is_negative=false, ab_group∈{A,B}` |
+| F-2 | Click "Option 2" | Shows thank-you message | `user_selected_rank=2, is_negative=false` |
+| F-3 | Click "None of these" → type "should be HW Lease" | Shows thank-you message | `is_negative=true, negative_hint="should be HW Lease"` |
+| F-4 | Click "None of these" → type "skip" | Shows thank-you message | `is_negative=true, negative_hint=null` |
 
-### Pre-DER 测试（原有）
+### Pre-DER Tests (existing)
 
 | # | Query | Expected |
 |---|---|---|
@@ -522,30 +522,30 @@ outputType: {}
 
 ---
 
-## §6 反馈闭环运维
+## §6 Feedback Loop Operations
 
-### 手动触发聚合
+### Trigger aggregation manually
 
 ```bash
-# 查看当前反馈数量（不写入）
+# Preview current feedback count (no write)
 python scripts/aggregate_feedback.py --dry-run
 
-# 正式聚合，更新 feedback_index.json
+# Run aggregation for real, updates feedback_index.json
 python scripts/aggregate_feedback.py
 ```
 
-输出文件：
-- `output/feedback/feedback.jsonl` — 原始反馈记录（append-only）
-- `output/feedback/feedback_index.json` — 聚合信号索引（每日 batch 覆盖）
+Output files:
+- `output/feedback/feedback.jsonl` — raw feedback records (append-only)
+- `output/feedback/feedback_index.json` — aggregated signal index (overwritten each daily batch)
 
-### 信号机制说明
+### Signal mechanism
 
-| 参数 | 值 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `MIN_SAMPLES` | 5 | 某节点反馈数 < 5 时不施加调整 |
-| `DELTA_CAP` | ±0.15 | LLM score 最大调整幅度 |
-| 公式 | `(pos-neg)/(pos+neg) × 0.15` | 信号归一化 |
-| A/B split | 90% B / 10% A | B 组享受反馈加权；A 组作为对照 |
+| `MIN_SAMPLES` | 5 | No adjustment applied when a node has fewer than 5 feedback samples |
+| `DELTA_CAP` | ±0.15 | Maximum adjustment to the LLM score |
+| Formula | `(pos-neg)/(pos+neg) × 0.15` | Signal normalization |
+| A/B split | 90% B / 10% A | Group B gets feedback weighting; group A is the control |
 
 ---
 
