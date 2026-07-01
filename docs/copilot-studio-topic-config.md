@@ -1,8 +1,8 @@
 # Product_LIne_Entry_Agent — Copilot Studio Topic Configuration Spec
 
-> Version: 0.3 (2026-07-01)
+> Version: 0.4 (2026-07-01)
 > Owner: @tangzhi2
-> Status: active | Last change: feedback loop nodes added to DER topic (2026-07-01)
+> Status: active | Last change: wired up hw_recommendations display (2026-07-01) — was computed by backend but silently dropped by Copilot Studio responseSchema/message since v0.3
 
 ## §0 Metadata
 
@@ -60,6 +60,7 @@ Sources of truth for this spec:
 ### Discrepancies from earlier versions
 - v0.2: DER topic had 3 nodes (Question card → HTTP → Message). v0.3 adds 4 feedback nodes inside `elseActions`.
 - v0.2: responseSchema for `/recommend_der` missing `node_key`. Fixed in v0.3.
+- v0.3: responseSchema and display message never declared `hw_recommendations` (IDG/ISG HW catalog output). Backend computed it correctly (`app.py`, verified in `tests/test_api.py::test_recommend_der_hw_pipeline_included_for_idg`), but Copilot Studio's HTTP Request node discarded the field entirely since it wasn't in `responseSchema` — this happened for **every** BG, not just SSG/DCG (BG-dependence was a red herring). Fixed in v0.4: added `hw_recommendations` to `responseSchema` and a new HW display node (4-A-2).
 - **Pre-DER early plan** said "simple Adaptive Card (BG + free-form text)" → **Final**: free-text Question only, no BG, no Adaptive Card.
 
 ---
@@ -243,6 +244,17 @@ beginDialog:
                 node_key: String
                 path_str: String
                 score: Number
+          hw_recommendations:
+            type:
+              kind: Table
+              properties:
+                category: String
+                level: String
+                level_label: String
+                name: String
+                node_key: String
+                path_str: String
+                score: Number
 
     # ── Node 4: Branch on results + feedback loop ─────────────────────────────
     - kind: ConditionGroup
@@ -262,6 +274,19 @@ beginDialog:
           activity: |-
             Based on your DER fields (Service Model, ARS flag, and description) you just inputed, here are the top matching PN tree nodes: 
             {Concat(Topic.DerApiResponse.topk, name & " | " & path_str & " [" & level_label & ", score " & Text(score, "0.00") & "]" & Char(10))}
+
+        # 4-A-2: Show HW recommendations (IDG / DCG-ISG only; empty table for other BGs)
+        - kind: ConditionGroup
+          id: conditionGroup_hw
+          conditions:
+            - id: conditionItem_hasHw
+              condition: =Not(IsEmpty(Topic.DerApiResponse.hw_recommendations))
+              actions:
+                - kind: SendActivity
+                  id: sendActivity_hwList
+                  activity: |-
+                    Matching hardware catalog items: 
+                    {Concat(Topic.DerApiResponse.hw_recommendations, name & " | " & path_str & " [" & level_label & ", score " & Text(score, "0.00") & "]" & Char(10))}
 
         # 4-B: Feedback choice card (4 buttons, no input fields)
         - kind: AdaptiveCardPrompt
@@ -390,15 +415,16 @@ outputType: {}
 
 ---
 
-## §3 DER Topic — Node 变更说明 (v0.2 → v0.3)
+## §3 DER Topic — Node 变更说明 (v0.2 → v0.4)
 
 | 节点 ID | 类型 | 状态 | 说明 |
 |---|---|---|---|
 | `question_gIjyHG` | Question | 未改动 | 询问 OpptyID |
 | `qhjc7e` | AdaptiveCardPrompt | 未改动 | DER 表单卡片 |
-| `hbP5eP` | HttpRequestAction | **改动** | `responseSchema.topk` 新增 `node_key: String` |
-| `conditionGroup_lmu0Q4` | ConditionGroup | **改动** | `elseActions` 新增 4 个反馈节点 |
-| `sendActivity_aG1xBI` | SendActivity | 未改动 | 展示推荐结果 |
+| `hbP5eP` | HttpRequestAction | **改动** | v0.3: `responseSchema.topk` 新增 `node_key: String`；v0.4: `responseSchema` 新增 `hw_recommendations` table |
+| `conditionGroup_lmu0Q4` | ConditionGroup | **改动** | `elseActions` 新增 4 个反馈节点 + v0.4 新增 HW 展示节点 |
+| `sendActivity_aG1xBI` | SendActivity | 未改动 | 展示服务推荐结果（`topk`） |
+| `conditionGroup_hw` / `sendActivity_hwList` | ConditionGroup / SendActivity | **新增 (v0.4)** | 若 `hw_recommendations` 非空则展示硬件推荐 |
 | `adaptiveCard_feedback_choice` | AdaptiveCardPrompt | **新增** | 4 按钮反馈卡片 → `Topic.FeedbackChoice` |
 | `conditionGroup_feedback` | ConditionGroup | **新增** | 按 `FeedbackChoice` 分流正/负反馈 |
 | `question_negative_hint` | Question | **新增** | 负反馈追问（StringPrebuiltEntity，支持"跳过"） |
