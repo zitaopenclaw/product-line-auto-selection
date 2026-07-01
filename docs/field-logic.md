@@ -1,7 +1,12 @@
 # Helen's Structured Field Cascade — Design Doc
 
 > **Source**: Helen & Ziff Sync-up transcripts (June 25, 2026)  
-> **Status**: Implemented in `src/field_rules.py` (DER Refinement Agent pipeline integration via `scripts/run_der_refinement_agent.py`)  
+> **Status**: Implemented in `src/field_rules.py`. The functions described below as
+> `apply_field_rules()` / `inject_field_candidates()` (flat mode) have been superseded by
+> `apply_field_rules_tree()` / `inject_field_candidates_tree()` (tree mode), which is what the
+> live `POST /recommend_der` endpoint (`app.py`) and `scripts/run_der_refinement_agent.py`
+> (default tree mode) actually call today. The flat-mode functions this doc originally
+> described no longer exist in `src/field_rules.py`.  
 > **Motivation**: The DER form contains several structured Yes/No and categorical fields
 > that give high-certainty signals about product type — sometimes 100% certain — that the
 > pure free-text recall pipeline was not exploiting.

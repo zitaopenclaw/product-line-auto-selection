@@ -4,9 +4,9 @@
 
 Production stack: **Sales (Teams) → Copilot Studio → HF Spaces Docker → FastAPI → Python pipeline**
 
-Two Copilot Studio topics expose the two agents:
-- **Pre-DER topic** → calls `/recommend` → Pre-DER Agent (voice input → PN tree L2/L3/L4 nodes)
-- **DER Input topic** → calls `/recommend_der` → DER Input AI Agent (structured DER form → PN tree L2/L3/L4 nodes)
+Two Copilot Studio topics expose the two agents; a third endpoint captures feedback for both:
+- **Pre-DER topic** → calls `/recommend` → Pre-DER Agent (voice input → PN tree L2/L3/L4 nodes, + HW catalog nodes for IDG/ISG)
+- **DER Input topic** → calls `/recommend_der` → DER Input AI Agent (structured DER form → PN tree L2/L3/L4 nodes, + HW catalog nodes for IDG/ISG), then calls `/feedback` after the seller picks (or rejects) a recommendation
 
 No Azure subscription required for hosting (HF Spaces runs independently); Copilot Studio itself requires a Power Platform / Microsoft 365 license.
 
@@ -17,20 +17,30 @@ No Azure subscription required for hosting (HF Spaces runs independently); Copil
 │ Copilot Studio (Teams)  │ ────────────────────────> │ Hugging Face Spaces (Docker SDK)      │
 │                         │                            │                                      │
 │ Topic 1: Pre-DER        │ ──→ /recommend             │ FastAPI /recommend                    │
-│ Topic 2: DER Input      │ ──→ /recommend_der         │      + /recommend_der + /health       │
+│ Topic 2: DER Input      │ ──→ /recommend_der         │      + /recommend_der                 │
+│                         │ ──→ /feedback              │      + /feedback + /health            │
 │                         │ <──────────────────────── │                                      │
-└─────────────────────────┘   JSON { topk: [...] }    │                                      │
-                                              │  startup (lifespan):                  │
-                                              │  ├─ load_pn_nodes() → 337 nodes       │
-                                              │  └─ init RerankClient                │
+└─────────────────────────┘  JSON { service_        │                                      │
+                              recommendations,       │  startup (lifespan):                  │
+                              hw_recommendations }   │  ├─ load_pn_nodes() → 337 nodes       │
+                                                      │  ├─ init RerankClient (service)       │
+                                                      │  └─ init HW RerankClient + hw_nodes   │
+                                                      │     (IDG/ISG, if rerank_hw.txt exists)│
+                                                      │                                      │
+                                              │  first request per pipeline (lazy):   │
+                                              │  ├─ _ensure_index() -- service PN tree │
+                                              │  │  ├─ load pre-built index from      │
+                                              │  │  │  data/index/ (baked in image)  │
+                                              │  │  └─ or build if absent (~30s)     │
+                                              │  └─ _ensure_hw_index(bg) -- IDG/ISG   │
+                                              │     HW catalog, built lazily per BG   │
                                               │                                      │
-                                              │  first request (lazy):               │
-                                              │  └─ _ensure_index()                  │
-                                              │     ├─ load pre-built index from      │
-                                              │     │  data/index/ (baked in image)  │
-                                              │     └─ or build if absent (~30s)     │
+                                              │  request -> recall → field cascade → │
+                                              │  rerank → feedback-signal reweight → │
+                                              │  diversity filter → top-3            │
                                               │                                      │
-                                              │  request -> recall → rerank → top-3  │
+                                              │  /feedback -> append output/feedback/│
+                                              │  feedback.jsonl (A/B group assigned)  │
                                               └──────────────────────────────────────┘
 ```
 
@@ -51,8 +61,9 @@ No Azure subscription required for hosting (HF Spaces runs independently); Copil
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
 | `/health` | GET | None | Health check |
-| `/recommend` | POST | `X-API-Key` | Pre-DER: voice query → top-3 PN tree nodes (L2/L3/L4) |
-| `/recommend_der` | POST | `X-API-Key` | DER Input: structured DER fields → top-3 PN tree nodes (L2/L3/L4) |
+| `/recommend` | POST | `X-API-Key` | Pre-DER: voice query → top-3 PN tree nodes (L2/L3/L4), + top-3 HW catalog nodes for IDG/ISG |
+| `/recommend_der` | POST | `X-API-Key` | DER Input: structured DER fields → top-3 PN tree nodes (L2/L3/L4), + top-3 HW catalog nodes for IDG/ISG |
+| `/feedback` | POST | `X-API-Key` | Records which of the top-3 the seller picked (or none); assigns an A/B group; appends to `output/feedback/feedback.jsonl` |
 
 **`/recommend` request** (`business_group` is optional soft signal):
 
@@ -77,7 +88,9 @@ No Azure subscription required for hosting (HF Spaces runs independently); Copil
 }
 ```
 
-Response (real example from test run):
+Response (dual-output shape; `hw_recommendations` is present only when a canonical IDG/ISG
+business group is detected — absent for SSG. `topk` mirrors `service_recommendations` for
+backward compatibility):
 
 ```json
 {
@@ -92,9 +105,33 @@ Response (real example from test run):
       "score": 0.92,
       "level_label": "High"
     }
-  ]
+  ],
+  "service_recommendations": [ "... same shape as topk ..." ],
+  "hw_recommendations": [ "... same shape, from the IDG/ISG HW catalog tree ..." ]
 }
 ```
+
+**`/feedback` request**:
+
+```json
+{
+  "opportunity_id": "unknown",
+  "bg": "IDG",
+  "der_description": "DaaS renewal with asset recovery for 800 seats",
+  "scope": "Standalone Asset Recovery Services Scope",
+  "service_model": "DAAS",
+  "ars_flag": true,
+  "ai_flag": false,
+  "candidates_shown": [
+    {"rank": 1, "node_key": "L3|...", "score": 0.92, "confidence": "High"}
+  ],
+  "user_selected_rank": 1,
+  "is_negative": false,
+  "negative_hint": null
+}
+```
+
+Response: `{"status": "ok", "feedback_id": "<uuid>", "ab_group": "A" | "B"}`.
 
 ### 3. Index (pre-built in Docker image)
 
@@ -191,7 +228,8 @@ Invoke-RestMethod -Uri "https://<user>-<space-name>.hf.space/recommend" `
 - **Cold start (idle restart)**: After 15 min idle, HF restarts the container. Startup takes ~45s (model load; index is pre-baked so no rebuild). The *first request* after restart will be slow.
 - **Fresh deploy build time**: ~10 min (pip install torch + sentence-transformers + index pre-build via `RUN python deploy/build_index.py`).
 - **HF Spaces free tier**: Space sleeps after 15 min idle. Upgrade to CPU Upgrade ($0.03/hr) for always-on.
-- **File size limits**: HF rejects git files > 10 MiB. Raw `.xlsx` and index binaries are excluded from git (`.gitignore` covers `data/raw/*.xlsx` and `data/index/`); they never touch HF git.
+- **Feedback data is not persistent**: `output/feedback/feedback.jsonl` lives on the Space's ephemeral filesystem — it is wiped on every container restart/redeploy (see "Persistent storage: Ephemeral" above). Aggregate/export it periodically if feedback history needs to survive a restart.
+- **File size limits**: HF rejects any pushed commit whose history contains a file > 10 MiB, even if that file isn't in the current tree — the pre-receive hook scans the full history being pushed, not just the diff. If `main`'s git history ever picks up a large blob (e.g. from merging in an old/unrelated branch), pushing straight `main` to the `hf` remote will be rejected; push a branch with clean lineage (no large blob in its ancestry) to `hf:main` instead. Raw `.xlsx` and index binaries are excluded from git going forward (`.gitignore` covers `data/raw/*` and `data/index/`).
 - **Page file (Windows local)**: `python deploy/build_index.py` may fail with `OSError 1455` on Windows if page file is too small. Reduce `batch_size` in the script.
 
 ## Scale Limits
@@ -206,5 +244,10 @@ Invoke-RestMethod -Uri "https://<user>-<space-name>.hf.space/recommend" `
 ## Future Options
 
 - **Production**: Move to Azure Container Apps for tighter integration with Copilot Studio / Teams via Managed Identity (no static API key needed); or Modal/Render for simpler always-on hosting
-- **Feedback loop**: Capture seller accepts/rejects in Copilot Studio → store in Dataverse → fine-tune recall or rerank weights
 - **API key rotation**: Rotate `APP_API_KEY` in HF Secrets without redeploy
+
+> Note: the feedback loop (seller accepts/rejects → reweighted rankings) that used to be listed
+> here as a future option is now implemented — see the `/feedback` endpoint above and
+> `src/feedback_signal.py` / `src/feedback_aggregator.py`. It currently writes to a JSONL file
+> on the (ephemeral) HF Space filesystem rather than Dataverse — persisting it externally
+> (Dataverse or similar) so feedback survives a Space restart is a natural next step.

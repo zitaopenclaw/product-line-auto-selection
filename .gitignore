@@ -49,9 +49,11 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
-# Project data (raw xlsx files contain sensitive business data; output is regenerable)
-data/raw/*.xlsx
+# Project data (data/raw holds sensitive business docs, meeting transcripts,
+# and source xlsx -- default-deny, whitelist only specific reviewed files)
+data/raw/*
 !data/raw/.gitkeep
+!data/raw/copilot-studio-session-summary.md
 data/converted/
 data/index/
 
@@ -67,3 +69,15 @@ logs/
 # Build artifacts
 *.pptx
 !docs/**/*.pptx
+
+# Copilot Studio debug/automation scratch scripts (docs/copilot-studio-topic-config.md §7.2
+# documents scripts/_copilot_primitives.py as the one reusable module; the rest are
+# one-off Playwright/CDP debugging scripts from manual topic configuration sessions)
+scripts/_*.py
+!scripts/_copilot_primitives.py
+
+# Local Playwright MCP debug artifacts (console logs, page snapshots, screenshots)
+.playwright-mcp/
+
+# Local Power Platform CLI auth setup (one-time, machine-specific; includes an MSI installer)
+pac-setup/

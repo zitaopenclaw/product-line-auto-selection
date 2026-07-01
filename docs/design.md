@@ -1,5 +1,14 @@
 # DER Refinement Agent — Design Doc (formerly V1.0)
 
+> **Historical design doc — describes the original flat-mode, BG-hard-filter batch pipeline.**
+> The live product has since moved to tree-mode matching against the PN hierarchy (soft BG
+> signal, not a hard filter) exposed as a real-time FastAPI service (`app.py`) called from
+> Copilot Studio, plus a HW catalog pipeline and a feedback loop. The flat-mode pipeline this
+> doc describes still exists as `scripts/run_der_refinement_agent.py --mode flat` but is
+> **deprecated / not actively maintained**. For the current architecture see
+> [CONTEXT.md](../CONTEXT.md) and [docs/deployment.md](deployment.md); for current guidance on
+> running things see the root `CLAUDE.md`.
+>
 > **Term definitions**: all domain terms (DER, DQR, OH, etc.) are defined in [CONTEXT.md](../CONTEXT.md). This document uses DER as the dataset/field identifier, which is interchangeable with DQR in business context.
 >
 > **Rename history**: previously referred to as "V1.0" / "v1.0". The agent was renamed on 2026-06-27 to **DER Refinement Agent** to align with the deal-desk workflow language. See [CONTEXT.md §"Agent Naming"](../CONTEXT.md#agent-naming-historical-anchor) for the decode key.

@@ -1,5 +1,12 @@
 # Pre-DER Agent — Design Doc (formerly V2.0)
 
+> **Historical design doc.** The matching approach described here (PN-tree, soft BG signal,
+> L2/L3/L4 output) is still accurate at the algorithm level and is what `app.py`'s live
+> `POST /recommend` endpoint runs today via `src/` modules — but this document predates the
+> real-time FastAPI service, the HW catalog dual-output pipeline (IDG/ISG), and the feedback
+> loop. For the current architecture and endpoint contracts see
+> [CONTEXT.md](../CONTEXT.md) and [docs/deployment.md](deployment.md).
+>
 > **Rename history**: previously referred to as "V2.0" / "v2.0". The agent was renamed on 2026-06-27 to **Pre-DER Agent** to align with the deal-desk workflow language. See [CONTEXT.md §"Agent Naming"](../CONTEXT.md#agent-naming) for the decode key.
 >
 > **Workflow position**: Pre-DER is the stage that runs **before** the DER form is finalized. It takes a free-form sales voice input and surfaces preliminary PN tree node (L2/L3/L4) recommendations that the seller can use as a starting point when completing the DER form. The downstream stage is the DER Input AI Agent, which works on the finalized structured DER form and also outputs PN tree nodes.
