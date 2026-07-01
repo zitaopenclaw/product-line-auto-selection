@@ -60,6 +60,8 @@ output/
 !output/advanced_pn_tree.json
 !output/oh_products.json
 !output/oh_products_*.json
+!output/idg_pn_tree.json
+!output/isg_pn_tree.json
 logs/
 
 # Build artifacts
